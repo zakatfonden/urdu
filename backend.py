@@ -1,4 +1,3 @@
-
 import google.generativeai as genai
 import os
 import fitz
@@ -10,8 +9,13 @@ from docx.shared import Pt
 import re
 from dotenv import load_dotenv
 import pyarabic.trans
-import streamlit as st
+import streamlit as st  # Import streamlit
+from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 load_dotenv()
+
+DEFAULT_API_KEY = os.getenv("API_KEY")
+
 
 def convert_english_to_arabic_digits(text):
     # Mapping of English digits to Arabic digits
@@ -27,11 +31,11 @@ def convert_english_to_arabic_digits(text):
         '8': '٨',
         '9': '٩'
     }
-    
+
     # Replace each English digit with its corresponding Arabic digit
     for eng, arb in digit_mapping.items():
         text = text.replace(eng, arb)
-    
+
     return text
 
 def process_section(doc, main_content):
@@ -55,24 +59,24 @@ def process_section(doc, main_content):
             paragraph.runs[0].font.name = "Times New Roman"
 
 def pdf_to_images(pdf_path, output_folder, start_page=1, end_page=None):
-    """
-    Convert a PDF into images (one per page).
-    """
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
+    """Converts PDF pages to PNG images."""
     pdf_document = fitz.open(pdf_path)
-    total_pages = len(pdf_document)
-    print(f"Number of pages in the PDF: {total_pages}")
 
+    # Validate and adjust page range
+    total_pages = len(pdf_document)
     if end_page is None or end_page > total_pages:
         end_page = total_pages
-
-    for page_number in range(start_page - 1, end_page):
-        page = pdf_document.load_page(page_number)
+    if start_page < 1:
+        start_page = 1
+    start_page_zero = start_page -1
+    # Iterate through the specified page range
+    for page_num in range(start_page_zero, end_page):  # Adjust for 0-based index
+        page = pdf_document.load_page(page_num)
         pix = page.get_pixmap()
-        image_path = os.path.join(output_folder, f"page_{page_number + 1}.jpg")
-        pix.save(image_path)
+        output_path = os.path.join(output_folder, f"page_{page_num + 1}.png")  # 1-based naming
+        pix.save(output_path)
+
+    pdf_document.close()
 
 def remove_small_number_brackets(input_string):
     # Regular expression to match brackets containing one or two digits (English or Arabic) with optional spaces
@@ -125,127 +129,78 @@ def extract_number_and_line(line):
             return True, line[4:]
     return False, line
 
-def process_page(page_data, doc, page_number, need_header_and_footer=True , need_footnotes=True,remove_characters=[">","<","«","»"]):
-    """
-    Processes OCR results and formats the content into a Word document.
+def process_page(page_data, doc, page_number, need_header_and_footer=True, need_footnotes=True, remove_characters=None):
+    """Processes a single page's extracted content and adds it to the Word document."""
 
-    :param page_data: JSON-like dictionary containing OCR results for the page.
-    :param doc: Word document object to append content.
-    :param page_number: Current page number being processed.
-    :param need_header: Boolean indicating if header is needed.
-    :param need_footer: Boolean indicating if footer is needed.
-    :param need_footnotes: Boolean indicating if footnotes are needed.
-    """
-    header = page_data.get("header", "")
-    heading = page_data.get("heading", "")
-    main_content = page_data.get("main_content", "")
-    footer = page_data.get("footer", "")
-    footnotes = page_data.get("footnotes", "")
+    try:
+        data = json.loads(page_data)  # Parse the JSON string
+    except json.JSONDecodeError as e:
+        print(f"JSONDecodeError: {e}")  # Log the error
+        print(f"Problematic JSON data: {page_data}")  # Log the data
+        return  # Exit the function if JSON parsing fails.  Don't add bad data
 
-    section = doc.sections[0]
+    # Optional character removal
+    if remove_characters:
+      for section in data:
+        if isinstance(data[section], str): #Check if the value is not None.
+            for char in remove_characters:
+                data[section] = data[section].replace(char, "")
 
-    if need_header_and_footer and header:
-        header_section = section.header
-        header_paragraph = header_section.paragraphs[0]
-        header_paragraph.text = header
-        header_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        header_paragraph.runs[0].font.size = Pt(12)
-    
-    if page_number > 1:
-        doc.add_page_break()
+    # Add Page Number as Header (if needed)
+    if need_header_and_footer:
+        section = doc.sections[0]  # Assuming you want page numbers on all sections
+        header = section.header
+        paragraph = header.paragraphs[0]
+        paragraph.text = f"Page {page_number}"
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    if heading:
-        if need_footnotes==False:
-            heading = remove_small_number_brackets(heading)
-        heading = heading.replace("\n", " ")
-        heading = heading.strip()
-        heading = remove_square_brackets(heading)
-        heading = remove_given_characters(heading, remove_characters)
-        heading = clean_arabic_text(heading)
-        paragraph = doc.add_paragraph(heading)
-        run = paragraph.runs[0]
-        run.bold = True
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run.font.size = Pt(14)
-    
-    # if main_content:
-    #     main_content = main_content.replace("\n", " ")
-    #     paragraph = doc.add_paragraph("")
-    #   # Remove leading and trailing whitespace
-    #     main_content = main_content.strip()
-    #     if need_footnotes==False:
-    #         main_content = remove_small_number_brackets(main_content)
-    #     main_content = remove_square_brackets(main_content)
-    #     main_content = remove_given_characters(main_content, remove_characters)
-    #     main_content = clean_arabic_text(main_content)
-    #     for text in main_content:
-    #     paragraph = doc.add_paragraph(main_content)
-    #     paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    #     if paragraph.runs:
-    #         paragraph.runs[0].font.size = Pt(10)
-    #         paragraph.runs[0].font.name = "Times New Roman"
 
-    
-    # if main_content:
-    #     main_content = main_content.replace("\n", " ")
-    #     paragraph = doc.add_paragraph("")
-    # # Remove leading and trailing whitespace
-    #     main_content = main_content.strip()
+    # Add Extracted Content to the Document
+    if need_header_and_footer and data.get("header") and data["header"].strip() != "": #Check if it exists and isnt blank
+        header_para = doc.add_paragraph(data["header"])
+        header_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    #     if need_footnotes == False:
-    #         main_content = remove_small_number_brackets(main_content)
 
-    #     main_content = remove_square_brackets(main_content)
-    #     main_content = remove_given_characters(main_content, remove_characters)
-    #     main_content = clean_arabic_text(main_content)
+    if  data.get("main_content") and data["main_content"].strip() != "":
+        # Regular expression to find text enclosed in asterisks
+        matches = re.findall(r'\*(.*?)\*', data["main_content"])
 
-    # # Split text based on '#' and remove empty parts
-    #     content_parts = [part.strip() for part in main_content.split('#') if part.strip()]
+        # Replace all occurrences of text enclosed in asterisks for processing
+        processed_text = re.sub(r'\*(.*?)\*', r'\1', data["main_content"])
 
-    # # Add each part to the document
-    #     for part in content_parts:
-    #         paragraph = doc.add_paragraph(part)
-    #         paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    #         if paragraph.runs:
-    #             paragraph.runs[0].font.size = Pt(10)
-    #             paragraph.runs[0].font.name = "Times New Roman"
-    
-    if main_content:
-        main_content = main_content.replace("\n", " ")
-        main_content = main_content.strip()
+        # Add the processed text to the document first
+        main_content_para = doc.add_paragraph(processed_text)
+        main_content_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        set_font_size(main_content_para,12)
 
-        if not need_footnotes:
-            main_content = remove_small_number_brackets(main_content)
+        # Loop through the matches and set font size to 24 and bold for the specific ranges
+        for match in matches:
+            for run in main_content_para.runs:
+                if match in run.text:
+                    # Split the run into three parts: before, match, and after
+                    before, _, after = run.text.partition(match)
+                    
+                    # Set the text for the 'before' part and restore other settings
+                    run.text = before
+                    
+                    # Create a new run for the matched text
+                    bold_run = main_content_para.add_run(match)
+                    set_font_size(bold_run, 24)  # Use the helper function
+                    bold_run.bold = True
+                    
+                    # Add a new run for the 'after' part
+                    after_run = main_content_para.add_run(after)
+                    # Apply necessary font settings if 'after' is not empty
+                    if after:
+                        set_font_size(after_run,12)
 
-        main_content = remove_square_brackets(main_content)
-        main_content = remove_given_characters(main_content, remove_characters)
-        main_content = clean_arabic_text(main_content)
-        main_content=convert_english_to_arabic_digits(main_content)
-    # Define regex pattern to find text enclosed in '*'
-        pattern = r'\*(.*?)\*'
-        parts = re.split(pattern, main_content)
-
-        for i, part in enumerate(parts):
-            if i % 2 == 1:  # This is the bold text
-                paragraph = doc.add_paragraph("")  # Create a new paragraph for bold text
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                run = paragraph.add_run(part.strip())  # Remove stars
-                run.bold = True
-            elif part.strip():  # This is normal text
-                paragraph = doc.add_paragraph("")  # Create a new paragraph for normal text
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                run = paragraph.add_run(part.strip())
-
-        # Set font properties
-        run.font.size = Pt(12)
-        run.font.name = "Times New Roman"
-    if need_footnotes and footnotes:
+    if need_footnotes and data.get("footnotes") and data["footnotes"].strip() != "":  # Check for footnotes
         paragraph = doc.add_paragraph("------------------")
         paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
         last_paragraph = None
         i = 1
-        for line in footnotes.split("\n"):
+        for line in data.get("footnotes").split("\n"):
             line = line.strip()
             is_new_point, text = extract_number_and_line(line)
             line = clean_arabic_text(line)
@@ -267,99 +222,79 @@ def process_page(page_data, doc, page_number, need_header_and_footer=True , need
                   run = last_paragraph.add_run(f" {text}")
                   run.font.size = Pt(10)
                   run.font.name = "Times New Roman"
-
-    if need_header_and_footer and footer:
-        footer_section = section.footer
-        for line in footer.split("\n"):
-            line = line.strip()
-            if line:
-                footer_paragraph = footer_section.paragraphs[0]
-                footer_paragraph.text = line
-                footer_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                if footer_paragraph.runs:
-                    footer_paragraph.runs[0].font.size = Pt(10)
+        
 
 
+    if need_header_and_footer and data.get("footer") and data["footer"].strip() != "": #check if footer exists and is not blank
+        footer_para = doc.add_paragraph(data["footer"])
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    doc.add_page_break()  # Add a page break after each page.
+
+    
 def process_page2(page_data, doc, page_number):
-    """
-    Processes a page's data and formats it into the Word document.
-    """
-    # Add a page break if it's not the first page
-    if page_number > 1:
-        doc.add_page_break()
+    """Processes a single page's extracted content (Matn, Sharh, Hashiya) and adds it to the Word document."""
 
-    # Process each section
-    if "section1" in page_data:
-        process_section(doc, page_data["section1"])
-    if "section2" in page_data:
-        process_section(doc, page_data["section2"])
-    if "section3" in page_data:
-        process_section(doc, page_data["section3"])
-    if "section4" in page_data:
-        process_section(doc, page_data["section4"])
+    try:
+        data = json.loads(page_data)  # Parse the JSON string
+    except json.JSONDecodeError as e:
+        print(f"JSONDecodeError: {e}")  # Log the error
+        print(f"Problematic JSON data: {page_data}")  # Log the data
+        return
+
+    # Add Page Number as Header (if needed)
+
+    section = doc.sections[0]  # Assuming you want page numbers on all sections
+    header = section.header
+    paragraph = header.paragraphs[0]
+    paragraph.text = f"Page {page_number}"
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
 
 
-def extract_pdf_content(pdf_extraction_prompt, start_page, end_page, api_key=None):
-    """
-    Extract content from pages of a PDF in Arabic using a generative model and categorize it into sections.
+    if data.get("header") and data["header"].strip() != "": #Check if it exists and isnt blank
+        header_para = doc.add_paragraph(data["header"])
+        header_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    Args:
-        pdf_extraction_prompt (str): The prompt for content extraction.
-        start_page (int): Starting page number.
-        end_page (int): Ending page number.
-        api_key (str, optional): API key to enable faster processing with reduced delay.
+    # Add Extracted Content to the Document
 
-    Returns:
-        list: A list of JSON objects containing the extracted data for each page.
-    """
-    used_api_key = ""
-    if api_key:
-        used_api_key = genai.configure(api_key=api_key)
-    else:
-        used_api_key = genai.configure(api_key=os.getenv("API_KEY"))
+    for section_key in ["section1", "section2", "section3", "footnotes"]: # Loop through all keys
+        if data.get(section_key) and data[section_key].strip() != "": # Check for existence and not empty
+            section_para = doc.add_paragraph(data[section_key])
+            section_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    st.write(model)
-    results = []  # Store results for all pages
 
-    for i in range(start_page, end_page + 1):
-        image_path = f"temp_images/page_{i}.jpg"
-        myfile = genai.upload_file(image_path)
+    doc.add_page_break()  # Add a page break after each processed page
 
-        if myfile is None:
-            print(f"File upload failed for page {i}!")
-            results.append({"error": "File upload failed", "page": i})
-            continue
+def set_font_size(element, size):
+    """Helper function to set font size for paragraphs and runs."""
+    if isinstance(element, Paragraph):
+        for run in element.runs:
+            run.font.size = Pt(size)
+    elif isinstance(element, Run):
+        element.font.size = Pt(size)
 
+
+def extract_pdf_content(prompt, output_folder, start_page=1, end_page=1, api_key=None):
+    """Extracts content from PDF images using Gemini API."""
+    genai.configure(api_key= api_key or DEFAULT_API_KEY)
+    model = genai.GenerativeModel('gemini-2.0-flash-preview-0829')
+
+    all_pages_content = []
+    for page_num in range(start_page , end_page+1):
+        image_path = os.path.join(output_folder, f"page_{page_num}.png")
+        #Check if file exists.
+        if not os.path.exists(image_path):
+            print(f"Error: Image file not found: {image_path}")  # Debugging print
+            continue #Skip if it doesnt exist
         try:
-            result = model.generate_content([myfile, pdf_extraction_prompt])
-            st.write(f"Processing page {i}: {image_path}")
-
-            print(f"Processing page {i}: {image_path}")
-
-            result_text = result.text
-            print(f"Result for page {i}: {result_text}")
-            start_index = result_text.find("{")
-            end_index = result_text.rfind("}") + 1
-
-            # Attempt to parse JSON from the result
-            result_json = json.loads(result_text[start_index:end_index])
-            results.append(result_json)
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON for page {i}: {e}")
-            print(f"Problematic text: {result_text[start_index:end_index]}")
-            continue
-            # results.append({"error": str(e), "page": i})
-
+            image_part = {"mime_type": "image/png", "data": open(image_path, "rb").read()}
+            prompt_parts = [prompt, image_part]
+            response = model.generate_content(prompt_parts)
+            response.resolve()
+            all_pages_content.append(response.text)
         except Exception as e:
-            print(f"Unexpected error for page {i}: {e}")
-            # results.append({"error": str(e), "page": i})
+            print(f"Error processing image {image_path}: {e}") #Error if failed
+            continue #Continue
 
-        time.sleep(2)
-    return results
-
-
-
-
-
+    return all_pages_content
