@@ -8,7 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 import re
 from dotenv import load_dotenv
-import pyarabic.trans  # You might not actually need this
+import pyarabic.trans
 import streamlit as st
 
 load_dotenv()
@@ -248,15 +248,14 @@ def process_page2(page_data, doc, page_number):
 
 
 def extract_pdf_content(pdf_extraction_prompt, start_page, end_page, api_key=None):
-    """Extracts content from a PDF using the Gemini API (gemini-1.5-flash)."""
+    """Extracts content from a PDF using the Gemini API (gemini-2.0-flash)."""
     if api_key:
         genai.configure(api_key=api_key)
     else:
         genai.configure(api_key=os.getenv("API_KEY"))  # Fallback to env variable
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    st.write(model)
-    results = []  # Store results for all pages
+    model = genai.GenerativeModel("gemini-2.0-flash")  # Use gemini-2.0-flash
+    results = []
 
     for i in range(start_page, end_page + 1):
         image_path = f"temp_images/page_{i}.jpg"
