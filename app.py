@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from backend import pdf_to_images, extract_pdf_content, process_page, process_page2
 import zipfile
 import io
+import shutil  # Import shutil
 load_dotenv()
 
 # Default API Key
@@ -43,48 +44,48 @@ choice = st.sidebar.radio("Go to:", options)
 # Process PDF Section
 if choice == "Process PDF":
     pdf_extraction_prompt = """
-You will be given pages of a PDF file containing text in Arabic. Your task is to extract the content from each page and categorize it into the following sections in **JSON format**:
+    You will be given pages of a PDF file containing text in Arabic. Your task is to extract the content from each page and categorize it into the following sections in **JSON format**:
 
-1. **Headers**:
-- Extract all text from the very top section of the page, typically found in the margin above the main content.
-- This section may include information such as document titles, section names, or repetitive information present across multiple pages. It may be present on the page may be not
-- The header is distinct from the main heading of the page.
-- Header is mostly seprated by the actual line using the line below the header.
+    1. **Headers**:
+        - Extract all text from the very top section of the page, typically found in the margin above the main content.
+        - This section may include information such as document titles, section names, or repetitive information present across multiple pages. It may be present on the page may be not
+        - The header is distinct from the main heading of the page.
+        - Header is mostly seprated by the actual line using the line below the header.
 
-2. Main Content (Body of the Page)
-- Extract all text from the **central body** of the page, excluding headers, footers, and footnotes.
-- **Identify the main heading of the page** and enclose it in asterisks (`*`), like this:
-- Example: *العنوان الرئيسي للصفحة*
-- Additionally, if **any bold text** is found **inside the main content**, it should also be treated as a heading and enclosed in asterisks (`*`), like this:
-- Example: *عنوان فرعي داخل المحتوى*
-- If the page is empty/blank give *blank*
+    2. Main Content (Body of the Page)
+        - Extract all text from the **central body** of the page, excluding headers, footers, and footnotes.
+        - **Identify the main heading of the page** and enclose it in asterisks (`*`), like this:
+        - Example: *العنوان الرئيسي للصفحة*
+        - Additionally, if **any bold text** is found **inside the main content**, it should also be treated as a heading and enclosed in asterisks (`*`), like this:
+        - Example: *عنوان فرعي داخل المحتوى*
+        - If the page is empty/blank give *blank*
 
-3. **Footnotes (Text Below the Black Line)**:
-- Carefully identify any black horizontal line present on the page.
-- If the line exists, categorize all text below it as "Footnotes".
-- The black line will typically cover about half the width of the page and is visually distinct.
-- If no black line is present, the "Footnotes" section should be empty for that page.
+    3. **Footnotes (Text Below the Black Line)**:
+        - Carefully identify any black horizontal line present on the page.
+        - If the line exists, categorize all text below it as "Footnotes".
+        - The black line will typically cover about half the width of the page and is visually distinct.
+        - If no black line is present, the "Footnotes" section should be empty for that page.
 
-4. **Footers**:
-- Extract all text from the footer section of the page, typically located at the very bottom.
-- Footers often include repetitive elements such as page numbers or document-specific references and should not overlap with footnotes.
+    4. **Footers**:
+        - Extract all text from the footer section of the page, typically located at the very bottom.
+        - Footers often include repetitive elements such as page numbers or document-specific references and should not overlap with footnotes.
 
-### Formatting Guidelines:
-- **Maintain the original Arabic text formatting** as closely as possible.
-- Use the following formatting rules:
-- **Headings**: Represent the main headings in a larger, bold font.
-- Ensure all extracted text is **right-aligned** to match proper Arabic formatting.
+    ### Formatting Guidelines:
+        - **Maintain the original Arabic text formatting** as closely as possible.
+        - Use the following formatting rules:
+        - **Headings**: Represent the main headings in a larger, bold font.
+        - Ensure all extracted text is **right-aligned** to match proper Arabic formatting.
 
-### Output Format:
-For each page, provide the extracted data in the following JSON structure:
-{
-"header": "<Arabic text of the header>",
-"main_content": "<Arabic text of the main content>",
-"footer": "<Arabic text of the footer>",
-"footnotes": "<Arabic text of the footnotes>"
-}
+    ### Output Format:
+    For each page, provide the extracted data in the following JSON structure:
+    {
+    "header": "<Arabic text of the header>",
+    "main_content": "<Arabic text of the main content>",
+    "footer": "<Arabic text of the footer>",
+    "footnotes": "<Arabic text of the footnotes>"
+    }
 
-"""
+    """
 
     st.title("Arabic PDF to Word Converter")
     st.write("Upload multiple PDFs, extract Arabic content, and download the results in separate Word documents (zipped).")
@@ -103,11 +104,9 @@ For each page, provide the extracted data in the following JSON structure:
             st.error("Please upload at least one PDF file.")
         else:
             try:
-                # Create temporary directories
+                # Create temporary directory
                 temp_dir = "temp"
                 os.makedirs(temp_dir, exist_ok=True)
-                output_folder = os.path.join(temp_dir, "temp_images")
-                os.makedirs(output_folder, exist_ok=True)
 
                 # Initialize a list to store the paths of the generated Word files
                 docx_files = []
@@ -126,6 +125,10 @@ For each page, provide the extracted data in the following JSON structure:
                         total_pages = len(pdf_document)
                         pdf_document.close()
 
+                        # --- Create Unique Image Directory ---
+                        output_folder = os.path.join(temp_dir, f"temp_images_{pdf_name}") #Unique directory
+                        os.makedirs(output_folder, exist_ok=True) #Creates that directory.
+
                         # ---  Per-File Processing ---
                         st.write(f"Processing: {pdf_file.name}")
 
@@ -137,8 +140,10 @@ For each page, provide the extracted data in the following JSON structure:
 
                         # Extract content and process *all* pages of the *current* PDF
                         st.write(f"Extracting content from {pdf_file.name}...")
+                        # --- Pass the correct output_folder ---
                         page_content = extract_pdf_content(
                             pdf_extraction_prompt,
+                            output_folder,  # Pass output_folder here
                             start_page=1,  # Start from page 1
                             end_page=total_pages, # to the total
                             api_key=user_api_key if user_api_key else None
@@ -173,16 +178,6 @@ For each page, provide the extracted data in the following JSON structure:
                         doc.save(output_path)
                         docx_files.append(output_path)
 
-                        #Clean temp_image for next file
-                        for filename in os.listdir(output_folder):
-                            file_path = os.path.join(output_folder, filename)
-                            try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                            except Exception as e:
-                                print('Failed to delete %s. Reason: %s' % (file_path, e))
                     except Exception as e:
                         st.error(f"Error: {e} with file: {pdf_file.name}")
                         continue #Outer loop error.
@@ -205,21 +200,7 @@ For each page, provide the extracted data in the following JSON structure:
             finally:
                 # Cleanup: Delete the temp directory and its contents
                 if os.path.exists(temp_dir):
-                    try:
-                        for filename in os.listdir(temp_dir):
-                            file_path = os.path.join(temp_dir, filename)
-                            try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                            except Exception as e:
-                                print('Failed to delete %s. Reason: %s' % (file_path, e))
-                        os.rmdir(temp_dir)
-
-                    except OSError as e:
-                        st.error(f"Error during cleanup: {e}")
-
+                    shutil.rmtree(temp_dir)  # Use shutil.rmtree for simplicity
 
 
 elif choice == "Matn, Sharh, Hashiya Extraction":
@@ -238,26 +219,26 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
     ### Key Instructions:
 
     1. **Horizontal Line as the Sole Section Divider**:
-    - Use **only** the horizontal lines beneath the text to divide content into sections.
-    - A horizontal line can:
+        - Use **only** the horizontal lines beneath the text to divide content into sections.
+        - A horizontal line can:
         - Extend across the entire width of the page.
-    - **Do not split text based on any other visual element** such as font size, paragraphs, or spacing.
+        - **Do not split text based on any other visual element** such as font size, paragraphs, or spacing.
 
     2. **Maximum Sections**:
-    - A page can have up to **3 sections**,the **header**.the footnotes,.
-    - If there are fewer than 4 sections based on the horizontal lines, only include the sections that exist.
+        - A page can have up to **3 sections**,the **header**.the footnotes,.
+        - If there are fewer than 4 sections based on the horizontal lines, only include the sections that exist.
 
     4. **Section Text**:
-    - Each section begins **immediately after a horizontal line** and ends **just before the next horizontal line**.
-    - **Do not include any text or symbols that appear on the horizontal line itself**.
+        - Each section begins **immediately after a horizontal line** and ends **just before the next horizontal line**.
+        - **Do not include any text or symbols that appear on the horizontal line itself**.
 
     5. **Empty or Missing Sections**:
-    - If a page lacks certain sections due to missing horizontal lines, exclude those sections from the JSON output.
+        - If a page lacks certain sections due to missing horizontal lines, exclude those sections from the JSON output.
 
     ### Formatting Notes:
-    - Each page's JSON output must be **independent** of the others.
-    - Maintain the **order of sections** as they appear on the page.
-    - Handle Arabic text appropriately to ensure correct encoding and readability.
+        - Each page's JSON output must be **independent** of the others.
+        - Maintain the **order of sections** as they appear on the page.
+        - Handle Arabic text appropriately to ensure correct encoding and readability.
 
 
     """
@@ -278,9 +259,6 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
                 # Create temporary directories
                 temp_dir = "temp"
                 os.makedirs(temp_dir, exist_ok=True)
-                output_folder = os.path.join(temp_dir, "temp_images")
-                os.makedirs(output_folder, exist_ok=True)
-
                 # Initialize a list to store the paths of the generated Word files
                 docx_files = []
 
@@ -297,6 +275,10 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
                         total_pages = len(pdf_document)
                         pdf_document.close()
 
+                        # --- Create Unique Image Directory ---
+                        output_folder = os.path.join(temp_dir, f"temp_images_{pdf_name}")
+                        os.makedirs(output_folder, exist_ok=True)
+
                         # ---  Per-File Processing ---
                         st.write(f"Processing: {pdf_file.name}")
 
@@ -308,8 +290,10 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
 
                         # Extract content and process pages
                         st.write(f"Extracting content from {pdf_file.name}...")
+                        # --- Pass correct out directory. ---
                         page_content = extract_pdf_content(
                             pdf_extraction_prompt,
+                            output_folder, # Pass output folder
                             start_page=1,
                             end_page=total_pages,
                             api_key=user_api_key if user_api_key else None
@@ -333,16 +317,6 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
                         doc.save(output_path)
                         docx_files.append(output_path)
 
-                        #Clean temp_image for next file
-                        for filename in os.listdir(output_folder):
-                            file_path = os.path.join(output_folder, filename)
-                            try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                            except Exception as e:
-                                print('Failed to delete %s. Reason: %s' % (file_path, e))
                     except Exception as e:
                         st.error(f"Error processing file: {pdf_file.name} : {e}")
                         continue
@@ -367,19 +341,7 @@ elif choice == "Matn, Sharh, Hashiya Extraction":
             finally:
                 # Cleanup: Delete the temp directory and its contents
                 if os.path.exists(temp_dir):
-                    try:
-                        for filename in os.listdir(temp_dir):
-                            file_path = os.path.join(temp_dir, filename)
-                            try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                            except Exception as e:
-                                print('Failed to delete %s. Reason: %s' % (file_path, e))
-                        os.rmdir(temp_dir)
-                    except OSError as e:
-                        st.error(f"Error during cleanup: {e}")
+                    shutil.rmtree(temp_dir)  # Use shutil.rmtree for simplicity
 
 # Find and Replace Section
 elif choice == "Find and Replace":
