@@ -248,13 +248,13 @@ def process_page2(page_data, doc, page_number):
 
 
 def extract_pdf_content(pdf_extraction_prompt, start_page, end_page, api_key=None):
-    """Extracts content from a PDF using the Gemini API."""
+    """Extracts content from a PDF using the Gemini API (gemini-1.5-flash)."""
     if api_key:
         genai.configure(api_key=api_key)
     else:
         genai.configure(api_key=os.getenv("API_KEY"))  # Fallback to env variable
 
-    model = genai.GenerativeModel("gemini-pro-vision")  # Use gemini-pro-vision
+    model = genai.GenerativeModel("gemini-1.5-flash")  # Use gemini-1.5-flash
     results = []
 
     for i in range(start_page, end_page + 1):
