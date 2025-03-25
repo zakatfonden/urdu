@@ -254,8 +254,9 @@ def extract_pdf_content(pdf_extraction_prompt, start_page, end_page, api_key=Non
     else:
         genai.configure(api_key=os.getenv("API_KEY"))  # Fallback to env variable
 
-    model = genai.GenerativeModel("gemini-1.5-flash")  # Use gemini-1.5-flash
-    results = []
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    st.write(model)
+    results = []  # Store results for all pages
 
     for i in range(start_page, end_page + 1):
         image_path = f"temp_images/page_{i}.jpg"
