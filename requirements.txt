@@ -1,0 +1,7 @@
+streamlit
+pillow
+python-docx
+pymupdf
+google-generativeai
+python-dotenv
+PyArabic
