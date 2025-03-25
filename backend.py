@@ -14,7 +14,7 @@ import streamlit as st
 load_dotenv()
 
 def convert_english_to_arabic_digits(text):
-    # Mapping of English digits to Arabic digits
+    # ... (No changes)
     digit_mapping = {
         '0': '٠',
         '1': '١',
@@ -36,7 +36,7 @@ def convert_english_to_arabic_digits(text):
 
 def process_section(doc, main_content):
     """
-    Helper function to process and add a section to the document.  (No changes)
+    Helper function to process and add a section to the document.
     """
     if main_content:
         paragraph = doc.add_paragraph("------------------")
@@ -56,26 +56,41 @@ def process_section(doc, main_content):
 
 def pdf_to_images(pdf_path, output_folder, start_page=1, end_page=None):
     """
-    Convert a PDF into images (one per page).  (No changes)
+    Convert a PDF into images (one per page), with added checks.
     """
+    print(f"pdf_to_images called with: pdf_path={pdf_path}, output_folder={output_folder}, start_page={start_page}, end_page={end_page}")
+
+    if not os.path.exists(pdf_path):
+        print(f"ERROR: PDF file not found at {pdf_path}")  # CRITICAL CHECK
+        return  # Exit if PDF doesn't exist
+
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
+        print(f"Created output folder: {output_folder}")
 
-    pdf_document = fitz.open(pdf_path)
-    total_pages = len(pdf_document)
-    print(f"Number of pages in the PDF: {total_pages}")
+    try:
+        pdf_document = fitz.open(pdf_path)
+        total_pages = len(pdf_document)
+        print(f"Number of pages in the PDF: {total_pages}")
 
-    if end_page is None or end_page > total_pages:
-        end_page = total_pages
+        if end_page is None or end_page > total_pages:
+            end_page = total_pages
 
-    for page_number in range(start_page - 1, end_page):
-        page = pdf_document.load_page(page_number)
-        pix = page.get_pixmap()
-        image_path = os.path.join(output_folder, f"page_{page_number + 1}.jpg")
-        pix.save(image_path)
+        for page_number in range(start_page - 1, end_page):
+            page = pdf_document.load_page(page_number)
+            pix = page.get_pixmap()
+            image_path = os.path.join(output_folder, f"page_{page_number + 1}.jpg")
+            pix.save(image_path)
+            print(f"Saved image: {image_path}")  # Log each image creation
+
+        pdf_document.close()  # Close the document after processing
+        print("pdf_to_images completed successfully.")
+
+    except Exception as e:
+        print(f"ERROR in pdf_to_images: {e}")
 
 def remove_small_number_brackets(input_string):
-    # Regular expression to match brackets containing one or two digits (English or Arabic) with optional spaces
+    # ... (No changes)
     digit_text=pyarabic.trans.normalize_digits(input_string, source='all', out='west')
 
     cleaned_string = re.sub(r"\(\d+\)", "", digit_text)
@@ -83,11 +98,12 @@ def remove_small_number_brackets(input_string):
 
 
 def remove_square_brackets(input_string):
+     # ... (No changes)
     cleaned_text = re.sub(r"\[[\u0600-\u06FF\s\d/]+\]", "", input_string)
     return cleaned_text
 
 def clean_arabic_text(text):
-    # Ensure no space before punctuation
+     # ... (No changes)
     text = re.sub(r'\s+([،؛:.؟!])', r'\1', text)
     # Ensure one space after punctuation
     text = re.sub(r'([،؛:.؟!])([^\s])', r'\1 \2', text)
@@ -96,21 +112,20 @@ def clean_arabic_text(text):
     return text
 
 def remove_given_characters(input_string, characters_to_remove):
-    # Removes characters outside of brackets
+     # ... (No changes)
     pattern = f"[{''.join(re.escape(char) for char in characters_to_remove)}]"
     cleaned_string = re.sub(f"{pattern}(?![^(]*\))", '', input_string)
     return cleaned_string
 
 def remove_english_alphabets(input_string):
     """
-    Removes all English alphabets (both uppercase and lowercase) from the input string. (No changes)
-
-    :param input_string: The string from which English alphabets should be removed.
-    :return: The cleaned string with no English alphabets.
+    Removes all English alphabets.
     """
     cleaned_string = re.sub(r'[A-Za-z]', '', input_string)
     return cleaned_string
+
 def to_arabic_number(n):
+     # ... (No changes)
     arabic_digits = {
         '0': '٠', '1': '١', '2': '٢', '3': '٣', '4': '٤',
         '5': '٥', '6': '٦', '7': '٧', '8': '٨', '9': '٩'
@@ -118,6 +133,7 @@ def to_arabic_number(n):
     return ''.join(arabic_digits[d] for d in str(n))
 
 def extract_number_and_line(line):
+     # ... (No changes)
     if line[0] == "(" and (line[2] == ")" or line[3] == ")"):
         if line[2] == ")":
             return True, line[3:]
@@ -127,14 +143,7 @@ def extract_number_and_line(line):
 
 def process_page(page_data, doc, page_number, need_header_and_footer=True , need_footnotes=True,remove_characters=[">","<","«","»"]):
     """
-    Processes OCR results and formats the content into a Word document. (Minor improvements)
-
-    :param page_data: JSON-like dictionary containing OCR results for the page.
-    :param doc: Word document object to append content.
-    :param page_number: Current page number being processed.
-    :param need_header_and_footer: Boolean indicating if header and footer are needed.
-    :param need_footnotes: Boolean indicating if footnotes are needed.
-    :param remove_characters: List of characters to remove.
+    Processes OCR results - No changes needed here for debugging.
     """
     header = page_data.get("header", "")
     heading = page_data.get("heading", "") #This was never used
@@ -236,11 +245,9 @@ def process_page(page_data, doc, page_number, need_header_and_footer=True , need
                 footer_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 if footer_paragraph.runs:
                     footer_paragraph.runs[0].font.size = Pt(10)
-
-
 def process_page2(page_data, doc, page_number):
     """
-    Processes a page's data and formats it into the Word document.  (No changes)
+    Processes page 2.
     """
     # Add a page break if it's not the first page
     if page_number > 1:
@@ -256,64 +263,75 @@ def process_page2(page_data, doc, page_number):
     if "section4" in page_data:
         process_section(doc, page_data["section4"])
 
-
-
 def extract_pdf_content(pdf_extraction_prompt, start_page, end_page, api_key=None):
     """
-    Extract content from pages of a PDF in Arabic using a generative model. (Minor improvements)
-
-    Args:
-        pdf_extraction_prompt (str): The prompt for content extraction.
-        start_page (int): Starting page number.
-        end_page (int): Ending page number.
-        api_key (str, optional): API key to enable faster processing.
-
-    Returns:
-        list: A list of JSON objects containing the extracted data for each page.
+    Extract content, with EXTENSIVE debugging.
     """
-    if api_key:
-        genai.configure(api_key=api_key)  # No need to store in a variable
-    else:
-        genai.configure(api_key=os.getenv("API_KEY")) #Ensure the usage of the default key.
+    print(f"extract_pdf_content called with: start_page={start_page}, end_page={end_page}, api_key={api_key}")
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    #st.write(model) # Removed: Not necessary to display the model object in Streamlit
-    results = []  # Store results for all pages
+    try:
+        if api_key:
+            genai.configure(api_key=api_key)
+            print(f"Using provided API key: {api_key}")  # Verify the key
+        else:
+            genai.configure(api_key=os.getenv("API_KEY"))
+            print(f"Using default API key from environment: {os.getenv('API_KEY')}")  # Verify
 
-    for i in range(start_page, end_page + 1):
-        image_path = f"temp_images/page_{i}.jpg"
-        myfile = genai.upload_file(image_path)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        print(f"Initialized Gemini model: {model}")  # Check model initialization
+        results = []
 
-        if myfile is None:
-            print(f"File upload failed for page {i}!")
-            results.append({"error": "File upload failed", "page": i})
-            continue
+        for i in range(start_page, end_page + 1):
+            image_path = f"temp_images/page_{i}.jpg"
+            print(f"Processing page {i}, image path: {image_path}")
 
-        try:
-            result = model.generate_content([myfile, pdf_extraction_prompt])
-            #st.write(f"Processing page {i}: {image_path}") #Removed unnessecary debug
+            if not os.path.exists(image_path):
+                print(f"ERROR: Image file not found at {image_path}")  # CRITICAL
+                results.append({"error": f"Image file not found: {image_path}", "page": i})
+                continue
 
-            print(f"Processing page {i}: {image_path}")
+            try:  # Inner try-except for Gemini interaction
+                myfile = genai.upload_file(image_path)  # Removed 'path='
+                if myfile is None:
+                    print(f"ERROR: genai.upload_file returned None for {image_path}")
+                    results.append({"error": "File upload failed (returned None)", "page": i})
+                    continue
 
-            result_text = result.text
-            print(f"Result for page {i}: {result_text}")
-            start_index = result_text.find("{")
-            end_index = result_text.rfind("}") + 1
+                print(f"Uploaded file: {myfile}")
+                result = model.generate_content([myfile, pdf_extraction_prompt])
+                print(f"Raw Gemini output for page {i}:\n{result.text}")  # PRINT RAW OUTPUT
 
-            # Attempt to parse JSON from the result
-            result_json = json.loads(result_text[start_index:end_index])
-            results.append(result_json)
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON for page {i}: {e}")
-            print(f"Problematic text: {result_text[start_index:end_index]}")
-            results.append({"error": str(e), "page": i})  # Append error to results
-            continue
+                result_text = result.text
+                start_index = result_text.find("{")
+                end_index = result_text.rfind("}") + 1
 
+                if start_index == -1 or end_index == -1:
+                    print("ERROR: Could not find JSON delimiters in Gemini response.")
+                    results.append({"error": "No JSON found in response", "page": i, "raw_output": result_text})
+                    continue
 
-        except Exception as e:
-            print(f"Unexpected error for page {i}: {e}")
-            results.append({"error": str(e), "page": i})  # Append error to results
-            continue #Cont
+                json_str = result_text[start_index:end_index]
+                print(f"Extracted JSON string: {json_str}")
 
-        time.sleep(2)  # Consider moving this *outside* the try-except to avoid delaying on errors
-    return results
+                try:
+                    result_json = json.loads(json_str)
+                    print(f"Successfully parsed JSON for page {i}")
+                    results.append(result_json)
+                except json.JSONDecodeError as e:
+                    print(f"ERROR: JSONDecodeError: {e}")
+                    print(f"Problematic JSON: {json_str}")
+                    results.append({"error": str(e), "page": i, "raw_output": json_str})
+                    continue
+
+            except Exception as e:  # Catch errors during Gemini interaction
+                print(f"ERROR during Gemini interaction for page {i}: {e}")
+                results.append({"error": str(e), "page": i})
+                continue
+
+            finally:  # ALWAYS sleep, even if there's an error
+                time.sleep(2)
+
+        print("extract_pdf_content completed.")
+        return results
+    except Exception as e:
+        print("The error is ",e)
