@@ -4,7 +4,7 @@ import backend # Assumes backend.py is in the same directory
 import os
 from io import BytesIO
 import logging # Optional: if you want frontend logging too
-import re # Import regular expressions module
+# import re # REMOVED: No longer needed for renaming
 
 # Configure basic logging if needed for debugging in terminal
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -133,9 +133,6 @@ with col2:
             use_container_width=True
         )
         # logger.info("Download button rendered.")
-    # Optionally add a placeholder or info text when download not ready
-    # elif st.session_state.processing_complete:
-    #     st.info("No files processed successfully.")
 
 
 # --- UI Elements for Progress ---
@@ -183,23 +180,13 @@ if process_button_clicked:
             status_text_placeholder.info(f"🔄 Starting {current_file_status}")
             # logger.info(f"Processing file: {original_filename}")
 
-            # --- Change 2: Modify Output Filename ---
-            file_name_base = ""
-            # logger.info(f"Attempting to extract number from: {original_filename}")
-            # Regex: part (case-insensitive) optionally followed by space/underscore, then digits
-            match = re.search(r'part[\s_]*(\d+)', original_filename, re.IGNORECASE)
-            if match:
-                file_name_base = match.group(1) # Extract the number
-                # logger.info(f"Extracted number '{file_name_base}'.")
-            else:
-                file_name_base = os.path.splitext(original_filename)[0]
-                # logger.warning(f"Pattern 'part[\\s_]*(\\d+)' not found. Using base name '{file_name_base}'.")
-                with results_container:
-                     st.warning(f"Filename pattern 'part[number]' not found in '{original_filename}'. Using fallback name: '{file_name_base}'.")
-
+            # --- START: Original Filename Logic (Renaming Removed) ---
+            # Use the original PDF filename (without extension) as the base for the Word file
+            file_name_base = os.path.splitext(original_filename)[0]
             docx_filename = f"{file_name_base}.docx"
-            # logger.info(f"Target docx filename: '{docx_filename}'")
-            # --- End Change 2 ---
+            # logger.info(f"Target docx filename will be: '{docx_filename}'")
+            # --- END: Original Filename Logic ---
+
 
             with results_container:
                 st.markdown(f"--- \n**Processing: {original_filename}**") # Separator and header
@@ -219,6 +206,7 @@ if process_button_clicked:
 
             if not raw_text.strip():
                  with results_container:
+                     # Ensure docx_filename is used in the message
                      st.warning(f"⚠️ No text extracted (PDF might be image-only). Creating empty Word file '{docx_filename}'.")
             else:
                 # 2. Process with Gemini
@@ -235,21 +223,26 @@ if process_button_clicked:
 
             # 3. Create Word Document
             if not gemini_error_occurred:
+                 # Ensure docx_filename is used in the message
                 status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
                 try:
                     word_doc_stream = backend.create_word_document(processed_text)
                     if word_doc_stream:
+                        # Pass the correct docx_filename to be stored for zipping
                         processed_files_data.append((docx_filename, word_doc_stream))
                         files_successfully_processed_count += 1
                         with results_container:
+                            # Use docx_filename in success message
                             st.success(f"✅ Created '{docx_filename}'")
                         # logger.info(f"Successfully created and stored '{docx_filename}'.")
                     else:
                         with results_container:
+                            # Use docx_filename in error message
                             st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
                         # logger.error(f"backend.create_word_document returned None for {original_filename}")
                 except Exception as doc_exc:
                      with results_container:
+                         # Use original_filename here as it's about the input file causing the doc creation error
                          st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
                      # logger.error(f"Exception during Word creation for {original_filename}: {doc_exc}")
 
