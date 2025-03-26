@@ -6,8 +6,9 @@ from io import BytesIO
 import logging # Optional: if you want frontend logging too
 import re # Import regular expressions module
 
-# Configure logging (optional for app.py, more useful in backend)
+# Configure basic logging if needed for debugging in terminal
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logger = logging.getLogger(__name__)
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
@@ -17,13 +18,25 @@ st.set_page_config(
 )
 
 # --- Initialize Session State ---
-# We need this to store the zip buffer for the download button
-if 'zip_buffer' not in st.session_state:
+# Ensure keys exist when the app first loads or reloads
+default_state = {
+    'zip_buffer': None,
+    'files_processed_count': 0,
+    'processing_complete': False,
+    'processing_started': False, # Flag to know if processing loop is active
+    'last_uploaded_files_count': 0 # To help detect file changes reliably
+}
+for key, value in default_state.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+def reset_processing_state():
+    """Resets state related to processing results and status."""
     st.session_state.zip_buffer = None
-if 'files_processed_count' not in st.session_state:
     st.session_state.files_processed_count = 0
-if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
+    st.session_state.processing_started = False
+    # logger.info("Processing state reset.")
 
 
 # --- Page Title ---
@@ -33,28 +46,19 @@ st.markdown("Upload Arabic PDF files, apply rules via Gemini, and download as Wo
 # --- Sidebar for Configuration ---
 st.sidebar.header("⚙️ Configuration")
 
-# Try to get API key from secrets (for deployment) otherwise use text input (for local)
-# Use st.secrets which is the documented way for Streamlit >= 1.1 secrets management
-api_key_from_secrets = ""
-if "GEMINI_API_KEY" in st.secrets:
-    api_key_from_secrets = st.secrets["GEMINI_API_KEY"]
-
+# --- API Key Input ---
+api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 api_key = st.sidebar.text_input(
     "Enter your Google Gemini API Key",
     type="password",
     help="Required. Get your key from Google AI Studio.",
-    value=api_key_from_secrets or "" # Pre-fill if found in secrets, else empty
+    value=api_key_from_secrets or ""
 )
-# Add feedback about API key source
-if api_key_from_secrets and not api_key:
-    # If key is ONLY in secrets and user clears the box, we should still use the secret
-    api_key = api_key_from_secrets # Ensure the secret key is used internally
+# --- API Key Feedback ---
+if api_key_from_secrets and api_key == api_key_from_secrets:
     st.sidebar.success("API Key loaded from Secrets.", icon="✅")
-elif api_key_from_secrets and api_key == api_key_from_secrets:
-    # Key is from secrets and hasn't been changed by user
-     st.sidebar.success("API Key loaded from Secrets.", icon="✅")
 elif not api_key_from_secrets and not api_key:
-    st.sidebar.warning("API Key not found in Streamlit Secrets or entered manually.", icon="🔑")
+    st.sidebar.warning("API Key not found or entered.", icon="🔑")
 elif api_key and not api_key_from_secrets:
      st.sidebar.info("Using manually entered API Key.", icon="⌨️")
 elif api_key and api_key_from_secrets and api_key != api_key_from_secrets:
@@ -63,19 +67,12 @@ elif api_key and api_key_from_secrets and api_key != api_key_from_secrets:
 
 # --- Model Selection Update ---
 st.sidebar.header("🤖 Gemini Model")
-# Define available models, putting 1.5 Flash first
-available_models = [
-    "gemini-1.5-flash-latest", # This is the latest Flash model
-    "gemini-1.5-pro-latest",
-    "gemini-pro", # Older generation
-]
+available_models = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro"]
 model_name = st.sidebar.selectbox(
-    "Select Gemini Model:",
-    options=available_models,
-    index=0, # Default to gemini-1.5-flash-latest
-    help="`gemini-1.5-flash-latest` is recommended for speed and cost-effectiveness."
+    "Select Gemini Model:", options=available_models, index=0,
+    help="`gemini-1.5-flash-latest` is recommended."
 )
-st.sidebar.caption(f"Using: `{model_name}`") # Show the selected model
+st.sidebar.caption(f"Using: `{model_name}`")
 
 # --- Extraction Rules ---
 st.sidebar.header("📜 Extraction Rules")
@@ -88,9 +85,7 @@ default_rules = """
 6. If tables are present, try to format them clearly using tab separation or simple markdown.
 """
 rules_prompt = st.sidebar.text_area(
-    "Enter the rules Gemini should follow:",
-    value=default_rules,
-    height=250,
+    "Enter the rules Gemini should follow:", value=default_rules, height=250,
     help="Provide clear instructions for how Gemini should process the extracted text."
 )
 
@@ -100,191 +95,227 @@ uploaded_files = st.file_uploader(
     "Choose PDF files",
     type="pdf",
     accept_multiple_files=True,
-    label_visibility="collapsed", # Hides the default label above the uploader
-    # When files change, reset the processing state and hide the old download button
-    on_change=lambda: (
-        st.session_state.update({
-            'zip_buffer': None,
-            'files_processed_count': 0,
-            'processing_complete': False
-            })
-    )
+    label_visibility="collapsed",
+    key="pdf_uploader"
 )
 
+# Detect if files have changed since last run to reset state
+current_file_count = len(uploaded_files) if uploaded_files else 0
+if current_file_count != st.session_state.last_uploaded_files_count:
+    # logger.info(f"File count changed from {st.session_state.last_uploaded_files_count} to {current_file_count}. Resetting state.")
+    reset_processing_state()
+    st.session_state.last_uploaded_files_count = current_file_count
+    # Force a rerun NOW if files changed, before buttons are rendered with old state
+    st.rerun()
+
+
 # --- Buttons Area ---
-col1, col2 = st.columns([3, 2]) # Adjust ratio as needed for button size/spacing
+col1, col2 = st.columns([3, 2])
 
 with col1:
+    # Disable process button if processing is already running
     process_button_clicked = st.button(
         "✨ Process PDFs and Generate Word Files",
         key="process_button",
-        use_container_width=True # Make button fill column width
+        use_container_width=True,
+        disabled=st.session_state.processing_started # Disable while processing
     )
 
 with col2:
-    # Show download button only if zip_buffer exists in session state
-    if st.session_state.zip_buffer:
+    # Download button visibility depends on zip_buffer existence AND processing not running
+    if st.session_state.zip_buffer and not st.session_state.processing_started:
         st.download_button(
             label=f"📥 Download All ({st.session_state.files_processed_count}) Word Files (.zip)",
             data=st.session_state.zip_buffer,
             file_name="arabic_pdf_word_files.zip",
             mime="application/zip",
-            key="download_zip_button_main", # Use a unique key
-            use_container_width=True # Make button fill column width
+            key="download_zip_button_main",
+            use_container_width=True
         )
-    # Optional: add a placeholder if you want the space to be reserved even when button isn't shown
-    # else:
-    #     st.write("") # Or st.empty()
+        # logger.info("Download button rendered.")
+    # Optionally add a placeholder or info text when download not ready
+    # elif st.session_state.processing_complete:
+    #     st.info("No files processed successfully.")
+
+
+# --- UI Elements for Progress ---
+# Placeholders need to be defined *before* the processing logic that might update them
+progress_bar_placeholder = st.empty()
+status_text_placeholder = st.empty()
+results_container = st.container()
+
 
 # --- Processing Logic ---
 if process_button_clicked:
-    # Reset state before starting a new processing job
-    st.session_state.zip_buffer = None
-    st.session_state.files_processed_count = 0
-    st.session_state.processing_complete = False
+    # logger.info("Process button clicked.")
+    # Immediately reset relevant state parts and set processing flag
+    reset_processing_state() # Clear previous results
+    st.session_state.processing_started = True # Signal that processing is starting
 
-    if uploaded_files:
-        st.info(f"{len(uploaded_files)} PDF file(s) selected.")
-
-        # Explicitly check for API key right before processing
-        if not api_key:
-            st.error("❌ Please enter or configure your Gemini API Key in the sidebar.")
-        elif not rules_prompt:
-            st.warning("⚠️ The 'Extraction Rules' field is empty. Processing will continue without specific instructions for Gemini.")
-        else:
-            processed_files_data = [] # List to hold (filename, BytesIO) tuples for zipping
-            # Initialize UI elements for progress reporting
-            progress_bar = st.progress(0)
-            status_text = st.empty() # Placeholder for detailed status updates
-            results_container = st.container() # Container to show success/error messages per file
-
-            total_files = len(uploaded_files)
-            files_processed_count = 0
-
-            for i, uploaded_file in enumerate(uploaded_files):
-                original_filename = uploaded_file.name
-                current_file_status = f"'{original_filename}' ({i+1}/{total_files})"
-
-                # --- Change 2: Modify Output Filename ---
-                file_name_base = ""
-                # Try to find 'part' followed by digits (case-insensitive)
-                match = re.search(r'part(\d+)', original_filename, re.IGNORECASE)
-                if match:
-                    file_name_base = match.group(1) # Extract the number
-                    logging.info(f"Extracted number '{file_name_base}' from filename '{original_filename}'.")
-                else:
-                    # Fallback: use original filename without extension if pattern not found
-                    file_name_base = os.path.splitext(original_filename)[0]
-                    logging.warning(f"Filename pattern 'part<number>' not found in '{original_filename}'. Using base name '{file_name_base}'.")
-                    with results_container: # Show warning in UI as well
-                         st.warning(f"Filename pattern 'part<number>' not found in '{original_filename}'. Using base name '{file_name_base}'.")
-
-                docx_filename = f"{file_name_base}.docx"
-                # --- End Change 2 ---
-
-
-                # Update overall status
-                status_text.info(f"🔄 Processing {current_file_status}...")
-
-                # 1. Extract Text
-                with results_container:
-                    st.markdown(f"--- \n**Processing: {original_filename}**")
-                # logging.info(f"Extracting text from {current_file_status}...") # Optional frontend log
-                raw_text = backend.extract_text_from_pdf(uploaded_file)
-
-                # Check extraction result (backend should return "" for empty/error)
-                if raw_text is None: # Defensive check, should not happen if backend is correct
-                     with results_container:
-                         st.error(f"❌ Unexpected error extracting text from {original_filename}. Skipping.")
-                     progress_bar.progress((i + 1) / total_files)
-                     continue
-
-                processed_text = "" # Initialize processed_text for this file
-                gemini_error_occurred = False # Flag for Gemini specific errors
-
-                if not raw_text.strip():
-                     with results_container:
-                         st.warning(f"⚠️ No text extracted from {original_filename}. Creating empty Word file '{docx_filename}'.")
-                     # Proceed to create an empty Word file
-                else:
-                    # 2. Process with Gemini (only if text was extracted)
-                    # logging.info(f"Sending text from {current_file_status} to Gemini ({model_name})...") # Optional
-                    status_text.info(f"🤖 Sending text from {current_file_status} to Gemini ({model_name})...")
-                    processed_text_result = backend.process_text_with_gemini(api_key, model_name, raw_text, rules_prompt)
-
-                    # Check Gemini result
-                    if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
-                         with results_container:
-                             st.error(f"❌ Gemini error for {original_filename}: {processed_text_result or 'Unknown API error'}")
-                         gemini_error_occurred = True
-                         # Option: Fallback to raw text if desired? (Keep commented out unless needed)
-                         # processed_text = raw_text
-                         # with results_container:
-                         #     st.warning(f"⚠️ Using raw extracted text for {original_filename} due to Gemini error.")
-                    else:
-                         processed_text = processed_text_result
-                         # logging.info(f"Successfully processed text for {current_file_status} with Gemini.") # Optional
-
-
-                # 3. Create Word Document (Skip only if a Gemini error occurred AND no fallback is used)
-                if not gemini_error_occurred: # If Gemini worked OR if no text was extracted (create empty) OR if fallback is enabled
-                    # logging.info(f"Creating Word document for '{docx_filename}'...") # Optional
-                    status_text.info(f"📝 Creating Word document '{docx_filename}'...")
-                    word_doc_stream = backend.create_word_document(processed_text) # Handles empty string correctly
-
-                    if word_doc_stream:
-                        # Use the potentially modified docx_filename here
-                        processed_files_data.append((docx_filename, word_doc_stream))
-                        files_processed_count += 1
-                        with results_container:
-                            st.success(f"✅ Successfully created '{docx_filename}'")
-                    else:
-                        with results_container:
-                            st.error(f"❌ Failed to create Word document for {original_filename}.")
-                # else: # If gemini_error_occurred is True (and no fallback), we skip Word creation
-
-                # Update progress bar after processing each file
-                progress_bar.progress((i + 1) / total_files)
-
-            # Clear transient status messages after the loop
-            status_text.empty()
-            progress_bar.empty() # Or set to 1.0 if preferred: progress_bar.progress(1.0)
-
-            # 4. Zip Files and Update Session State (No download button here anymore)
-            if processed_files_data:
-                results_container.info(f"💾 Zipping {files_processed_count} processed Word document(s)...")
-                zip_buffer = backend.create_zip_archive(processed_files_data)
-
-                if zip_buffer:
-                    # Store the buffer and count in session state
-                    st.session_state.zip_buffer = zip_buffer
-                    st.session_state.files_processed_count = files_processed_count
-                    st.session_state.processing_complete = True
-                    # No download button needed here, it's handled above
-                    results_container.success(f"✅ Processing complete. Click the 'Download All' button above to get the zip file.")
-                    # We need to rerun the script for the download button to update/appear
-                    st.rerun()
-                else:
-                    st.error("❌ Failed to create zip archive.")
-                    st.session_state.processing_complete = True # Mark as complete even on error
-            elif not uploaded_files: # If button was clicked but files list became empty
-                 pass # No message needed here, handled by initial check
-            else: # If files were uploaded but none processed successfully
-                 st.warning("⚠️ No files were successfully processed to include in a zip archive.")
-                 st.session_state.processing_complete = True # Mark as complete
-
-    else: # No files uploaded when process button clicked
+    # Checks before starting loop
+    if not uploaded_files:
         st.warning("⚠️ Please upload PDF files first.")
-        # Ensure download button is hidden if no files were ever processed
-        st.session_state.zip_buffer = None
-        st.session_state.files_processed_count = 0
-        st.session_state.processing_complete = False
+        st.session_state.processing_started = False # Reset flag as we didn't start
+    elif not api_key:
+        st.error("❌ Please enter or configure your Gemini API Key in the sidebar.")
+        st.session_state.processing_started = False # Reset flag
+    elif not rules_prompt:
+        st.warning("⚠️ The 'Extraction Rules' field is empty. Processing without specific instructions.")
+        # Proceed even if rules are empty, so don't reset flag here
+
+    # Only proceed if files are uploaded AND API key is present
+    if uploaded_files and api_key and st.session_state.processing_started:
+        # logger.info(f"Starting processing loop for {len(uploaded_files)} files.")
+        st.info(f"Processing {len(uploaded_files)} PDF file(s)...") # General start message
+
+        processed_files_data = []
+        total_files = len(uploaded_files)
+        files_successfully_processed_count = 0
+
+        # Show progress bar instance
+        progress_bar = progress_bar_placeholder.progress(0, text="Starting processing...")
+
+        for i, uploaded_file in enumerate(uploaded_files):
+            original_filename = uploaded_file.name
+            current_file_status = f"'{original_filename}' ({i+1}/{total_files})"
+            progress_text = f"Processing {current_file_status}..."
+            progress_bar.progress(i / total_files, text=progress_text) # Update progress before starting file
+            status_text_placeholder.info(f"🔄 Starting {current_file_status}")
+            # logger.info(f"Processing file: {original_filename}")
+
+            # --- Change 2: Modify Output Filename ---
+            file_name_base = ""
+            # logger.info(f"Attempting to extract number from: {original_filename}")
+            # Regex: part (case-insensitive) optionally followed by space/underscore, then digits
+            match = re.search(r'part[\s_]*(\d+)', original_filename, re.IGNORECASE)
+            if match:
+                file_name_base = match.group(1) # Extract the number
+                # logger.info(f"Extracted number '{file_name_base}'.")
+            else:
+                file_name_base = os.path.splitext(original_filename)[0]
+                # logger.warning(f"Pattern 'part[\\s_]*(\\d+)' not found. Using base name '{file_name_base}'.")
+                with results_container:
+                     st.warning(f"Filename pattern 'part[number]' not found in '{original_filename}'. Using fallback name: '{file_name_base}'.")
+
+            docx_filename = f"{file_name_base}.docx"
+            # logger.info(f"Target docx filename: '{docx_filename}'")
+            # --- End Change 2 ---
+
+            with results_container:
+                st.markdown(f"--- \n**Processing: {original_filename}**") # Separator and header
+
+            # 1. Extract Text
+            status_text_placeholder.info(f"📄 Extracting text from {current_file_status}...")
+            raw_text = backend.extract_text_from_pdf(uploaded_file)
+
+            if raw_text is None:
+                 with results_container:
+                     st.error(f"❌ Error extracting text. Skipping.")
+                 progress_bar.progress((i + 1) / total_files, text=progress_text + " Error.")
+                 continue # Skip to next file
+
+            processed_text = ""
+            gemini_error_occurred = False
+
+            if not raw_text.strip():
+                 with results_container:
+                     st.warning(f"⚠️ No text extracted (PDF might be image-only). Creating empty Word file '{docx_filename}'.")
+            else:
+                # 2. Process with Gemini
+                status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini ({model_name})...")
+                processed_text_result = backend.process_text_with_gemini(api_key, model_name, raw_text, rules_prompt)
+
+                if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
+                     with results_container:
+                         st.error(f"❌ Gemini error: {processed_text_result or 'Unknown API error'}")
+                     gemini_error_occurred = True
+                else:
+                     processed_text = processed_text_result
+                     # logger.info(f"Gemini processing successful for {original_filename}.")
+
+            # 3. Create Word Document
+            if not gemini_error_occurred:
+                status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
+                try:
+                    word_doc_stream = backend.create_word_document(processed_text)
+                    if word_doc_stream:
+                        processed_files_data.append((docx_filename, word_doc_stream))
+                        files_successfully_processed_count += 1
+                        with results_container:
+                            st.success(f"✅ Created '{docx_filename}'")
+                        # logger.info(f"Successfully created and stored '{docx_filename}'.")
+                    else:
+                        with results_container:
+                            st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
+                        # logger.error(f"backend.create_word_document returned None for {original_filename}")
+                except Exception as doc_exc:
+                     with results_container:
+                         st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
+                     # logger.error(f"Exception during Word creation for {original_filename}: {doc_exc}")
+
+            # Update progress bar after file completion or error
+            progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}")
 
 
-# Display initial message if no files are uploaded and processing hasn't happened
-if not uploaded_files and not st.session_state.processing_complete:
-    st.info("Upload one or more PDF files using the uploader above, configure settings in the sidebar, and click 'Process PDFs'.")
+        # --- End of file loop ---
+        # logger.info("Processing loop finished.")
 
-# --- Footer or additional info ---
+        # Clear progress bar and transient status text
+        progress_bar_placeholder.empty()
+        status_text_placeholder.empty()
+
+        # 4. Zip Files and Update State
+        final_status_message = ""
+        rerun_needed = False
+        if processed_files_data:
+            # logger.info(f"Zipping {files_successfully_processed_count} documents.")
+            results_container.info(f"💾 Zipping {files_successfully_processed_count} document(s)...")
+            try:
+                zip_buffer = backend.create_zip_archive(processed_files_data)
+                if zip_buffer:
+                    st.session_state.zip_buffer = zip_buffer
+                    st.session_state.files_processed_count = files_successfully_processed_count
+                    final_status_message = f"✅ Processing complete! {files_successfully_processed_count} file(s) ready. Click 'Download All' above."
+                    results_container.success(final_status_message)
+                    # logger.info("Zip created successfully, state updated.")
+                    rerun_needed = True # Set flag to rerun
+                else:
+                    final_status_message = "❌ Failed to create zip archive (backend returned None)."
+                    results_container.error(final_status_message)
+                    # logger.error(final_status_message)
+
+            except Exception as zip_exc:
+                 final_status_message = f"❌ Error during zipping: {zip_exc}"
+                 results_container.error(final_status_message)
+                 # logger.error(final_status_message)
+
+        else: # No files were successfully processed to zip
+             final_status_message = "⚠️ No files were successfully processed to include in a zip archive."
+             results_container.warning(final_status_message)
+             # logger.warning(final_status_message)
+
+        # Update final state variables AFTER the loop and zipping attempt
+        st.session_state.processing_complete = True
+        st.session_state.processing_started = False # Processing has finished
+
+        # logger.info("Processing marked complete. Rerun needed: %s", rerun_needed)
+
+        # Rerun ONLY if zip was created successfully to update the download button display
+        if rerun_needed:
+            st.rerun()
+        # If no rerun happens, the script finishes here, and the UI reflects the final state
+
+    else:
+        # Case where processing didn't start due to initial checks failing
+        # Ensure processing_started is False if it wasn't already reset
+        st.session_state.processing_started = False
+
+
+# --- Fallback info message ---
+if not uploaded_files and not st.session_state.processing_started and not st.session_state.processing_complete:
+    st.info("Upload PDF files, configure settings, and click 'Process PDFs'.")
+
+
+# --- Footer ---
 st.markdown("---")
 st.markdown("Developed with Streamlit and Google Gemini.")
