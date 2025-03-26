@@ -44,7 +44,6 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
     Args:
         api_key (str): The Gemini API key.
         model_name (str): The Gemini model name (e.g., 'gemini-1.5-flash-latest').
-                         *** This argument is now IGNORED internally. ***
         raw_text (str): The raw text extracted from the PDF.
         rules_prompt (str): User-defined rules/instructions for Gemini.
     Returns:
@@ -59,12 +58,7 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
 
     try:
         genai.configure(api_key=api_key)
-        # --- CHANGE HERE: Hardcoded model name ---
-        hardcoded_model = "gemini-2.0-flash"
-        model = genai.GenerativeModel(hardcoded_model)
-        # The 'model_name' argument passed to this function is no longer used here.
-        # --- End of Change ---
-
+        model = genai.GenerativeModel(model_name)
 
         # Construct a clear prompt for Gemini
         full_prompt = f"""
@@ -80,8 +74,7 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
         Return ONLY the processed text according to the instructions. Do not add any introductory phrases like "Here is the processed text:".
         """
 
-        # Log which model is actually being used
-        logging.info(f"Sending request to Gemini model: {hardcoded_model}")
+        logging.info(f"Sending request to Gemini model: {model_name}")
         response = model.generate_content(full_prompt)
 
         # Handle potential safety blocks or empty responses
