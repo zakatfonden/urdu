@@ -1,14 +1,16 @@
 # backend.py
 import io
 import zipfile
-# from PyPDF2 import PdfReader # REMOVE THIS LINE
-import fitz # PyMuPDF - ADD THIS LINE
+import fitz  # PyMuPDF - Used for PDF text extraction
 import google.generativeai as genai
 from docx import Document
+from docx.shared import Pt  # Optional: For setting font size
+from docx.enum.text import WD_ALIGN_PARAGRAPH  # Import alignment enum for clarity
 import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__) # Use a specific logger if preferred
 
 # --- PDF Processing ---
 def extract_text_from_pdf(pdf_file_obj):
@@ -25,26 +27,26 @@ def extract_text_from_pdf(pdf_file_obj):
         text = ""
         # Open the PDF from bytes
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            logging.info(f"Opened PDF with PyMuPDF. Number of pages: {len(doc)}")
+            logger.info(f"Opened PDF with PyMuPDF. Number of pages: {len(doc)}")
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
                 # Extract text respecting the page's effective area (incl. CropBox)
                 # sort=True attempts to maintain reading order
                 page_text = page.get_text("text", sort=True)
                 if page_text:
-                    text += page_text + "\n" # Add newline between pages
+                    text += page_text + "\n"  # Add newline between pages
 
-        logging.info(f"Successfully extracted text using PyMuPDF.")
+        logger.info(f"Successfully extracted text using PyMuPDF.")
         # Basic check if extraction yielded *any* text
         if not text.strip():
-             logging.warning("PyMuPDF extraction resulted in empty text. PDF might be image-based or lack text content.")
-             # Return empty string instead of None to avoid downstream errors expecting a string
-             return ""
+            logger.warning("PyMuPDF extraction resulted in empty text. PDF might be image-based or lack text content.")
+            # Return empty string instead of None to avoid downstream errors expecting a string
+            return ""
         return text
     except Exception as e:
         # Catch fitz-specific errors or general exceptions
-        logging.error(f"Error extracting text from PDF using PyMuPDF: {e}")
-        return None # Indicate failure clearly
+        logger.error(f"Error extracting text from PDF using PyMuPDF: {e}", exc_info=True) # Log traceback
+        return None  # Indicate failure clearly
 
 
 # --- Gemini Processing ---
@@ -60,12 +62,16 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
         str: The processed text from Gemini, or an error string if an error occurs.
     """
     if not api_key:
-        logging.error("Gemini API key is missing.")
+        logger.error("Gemini API key is missing.")
         # Return an error string that can be displayed in the UI
         return "Error: Gemini API key is missing."
-    if not raw_text: # Don't call Gemini if there's no text
-        logging.warning("Skipping Gemini call: No raw text provided.")
-        return "" # Return empty string consistent with extract_text_from_pdf
+    # Check specifically for empty string OR None if extract_text_from_pdf returns None on error
+    if not raw_text:
+        logger.warning("Skipping Gemini call: No raw text provided.")
+        # Return empty string if raw_text was empty, consistent with extract_text_from_pdf
+        # If raw_text was None (extraction failed), maybe return an error or None?
+        # For consistency with the flow where empty text leads to empty docx, return ""
+        return ""
 
     try:
         genai.configure(api_key=api_key)
@@ -82,62 +88,63 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
         ---
 
         **Output:**
-        Return ONLY the processed text according to the instructions. Do not add any introductory phrases like "Here is the processed text:".
+        Return ONLY the processed text according to the instructions. Do not add any introductory phrases like "Here is the processed text:". Ensure the output is purely the processed Arabic content.
         """
 
-        logging.info(f"Sending request to Gemini model: {model_name}")
+        logger.info(f"Sending request to Gemini model: {model_name}")
         # Add safety settings to potentially allow more content if needed, adjust as necessary
         safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
-        response = model.generate_content(full_prompt, safety_settings=safety_settings)
+        # Consider making generation_config configurable (temperature, top_p, etc.) if needed
+        generation_config = genai.types.GenerationConfig(
+            # candidate_count=1, # Default is 1
+            # stop_sequences=["\n\n\n"], # Example stop sequence
+            # max_output_tokens=8192, # Model dependent, adjust if needed
+            temperature=0.7, # Adjust creativity vs factualness
+        )
 
-        # Handle potential safety blocks or empty responses
-        if not response.parts:
-             # Check candidate details first for finish reason
-             try:
-                if response.candidates and response.candidates[0].finish_reason != 'STOP':
-                    finish_reason = response.candidates[0].finish_reason
-                    safety_ratings = response.candidates[0].safety_ratings if response.candidates[0].safety_ratings else "N/A"
-                    logging.error(f"Gemini generation finished unexpectedly. Reason: {finish_reason}, Safety Ratings: {safety_ratings}")
-                    # You might want to check safety_ratings here specifically
-                    block_reason_detail = f"Reason: {finish_reason}"
-                    if response.prompt_feedback.block_reason:
-                         block_reason_detail += f" (Prompt Feedback Block: {response.prompt_feedback.block_reason})"
-                    return f"Error: Content generation stopped. {block_reason_detail}"
-             except (AttributeError, IndexError):
-                 # Fallback if candidate structure is not as expected
-                 pass # Continue to check prompt_feedback
+        response = model.generate_content(
+            full_prompt,
+            generation_config=generation_config,
+            safety_settings=safety_settings
+            )
 
-             # Check prompt feedback if candidate check didn't yield a reason
-             if response.prompt_feedback.block_reason:
-                 logging.error(f"Gemini request blocked. Reason: {response.prompt_feedback.block_reason}")
-                 return f"Error: Content blocked by Gemini. Reason: {response.prompt_feedback.block_reason}"
-             else:
-                 # No parts, no candidate finish reason, no prompt block reason -> likely empty response
-                 logging.warning("Gemini returned an empty response with no specific block reason.")
-                 return "" # Return empty if response is empty but not blocked
-
-
-        # Accessing the text safely
+        # Enhanced Response Handling
         try:
+            # Access text via response.text, handles potential errors internally in the library
             processed_text = response.text
-            logging.info("Successfully received response from Gemini.")
+            logger.info("Successfully received response from Gemini.")
             return processed_text
-        except ValueError:
-            # If response.text raises ValueError (e.g., function calling involved, though not expected here)
-            logging.error("Gemini response did not contain valid text.")
-            return "Error: Gemini response format issue (no text found)."
+
+        except ValueError as ve:
+            # Raised if the response payload is problematic (e.g., function calls not expected)
+             logger.error(f"Gemini response format issue (ValueError): {ve}", exc_info=True)
+             # Check for blocking/safety issues in prompt_feedback
+             if response.prompt_feedback.block_reason:
+                 block_reason = response.prompt_feedback.block_reason
+                 logger.error(f"Gemini request potentially blocked. Reason: {block_reason}")
+                 return f"Error: Content blocked by Gemini. Reason: {block_reason}"
+             else:
+                 return f"Error: Gemini response format issue (ValueError). Details: {ve}"
         except Exception as resp_err:
-             logging.error(f"Error extracting text from Gemini response: {resp_err}")
+             # Catch other potential errors during response processing
+             logger.error(f"Error processing Gemini response: {resp_err}", exc_info=True)
              return f"Error: Failed to parse Gemini response. Details: {resp_err}"
 
 
+    # Handle potential API call errors, configuration errors etc.
+    except google.api_core.exceptions.PermissionDenied as perm_denied:
+         logger.error(f"Gemini API Permission Denied (check API Key permissions): {perm_denied}", exc_info=True)
+         return f"Error: Gemini API Permission Denied. Check your API key and its permissions. Details: {perm_denied}"
+    except google.api_core.exceptions.GoogleAPIError as api_err:
+         logger.error(f"Gemini API Error: {api_err}", exc_info=True)
+         return f"Error: Gemini API communication failed. Details: {api_err}"
     except Exception as e:
-        logging.error(f"Error interacting with Gemini API: {e}")
+        logger.error(f"General error interacting with Gemini API: {e}", exc_info=True)
         # Provide a user-friendly error string
         return f"Error: Failed to process text with Gemini. Details: {e}"
 
@@ -146,7 +153,7 @@ def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules
 def create_word_document(processed_text: str):
     """
     Creates a Word document (.docx) in memory containing the processed text.
-    Sets text direction to RTL and uses Arial font.
+    Sets text direction to RTL, alignment to right, and uses Arial font.
     Args:
         processed_text (str): The text to put into the document.
     Returns:
@@ -154,37 +161,35 @@ def create_word_document(processed_text: str):
     """
     try:
         document = Document()
-        # Add text.
+        # Add a paragraph
         paragraph = document.add_paragraph()
 
-        # Set paragraph alignment and direction BEFORE adding runs if possible,
-        # or apply to the paragraph after adding text.
+        # 1. Set Paragraph Formatting (Alignment and Base Direction)
         paragraph_format = paragraph.paragraph_format
-        # WD_ALIGN_PARAGRAPH.RIGHT is 2 (not 3 as previously) - Correction
-        # However, python-docx constants are preferred if available.
-        # from docx.enum.text import WD_ALIGN_PARAGRAPH
-        # paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        paragraph_format.alignment = 2 # Using integer value 2 for RIGHT
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT # Use enum for clarity
         paragraph_format.right_to_left = True
 
-        # Add the text as a run within the paragraph
-        run = paragraph.add_run(processed_text)
+        # 2. Add Text as a Run
+        # Ensure processed_text is a string, handle potential None (though Gemini func aims to return string)
+        text_to_add = processed_text if isinstance(processed_text, str) else ""
+        run = paragraph.add_run(text_to_add)
 
-        # Set font for the run (ensures Arabic characters render well)
+        # 3. Set Font Formatting for the Run
         font = run.font
-        font.name = 'Arial' # Or Times New Roman, Calibri - common fonts supporting Arabic
-        # Optionally set font size
-        # from docx.shared import Pt
+        font.name = 'Arial'  # Good choice for Arabic support
+        # Explicitly tell the font to handle RTL script characteristics
+        font.rtl = True
+        # Optional: Set font size if desired
         # font.size = Pt(12)
 
         # Save document to a BytesIO stream
         doc_stream = io.BytesIO()
         document.save(doc_stream)
         doc_stream.seek(0) # Rewind the stream to the beginning
-        logging.info("Successfully created Word document in memory.")
+        logger.info("Successfully created Word document in memory with RTL settings.")
         return doc_stream
     except Exception as e:
-        logging.error(f"Error creating Word document: {e}")
+        logger.error(f"Error creating Word document: {e}", exc_info=True) # Log traceback
         return None
 
 # --- Zipping Files ---
@@ -198,7 +203,7 @@ def create_zip_archive(files_data: list):
         io.BytesIO: A BytesIO stream containing the Zip archive data, or None on error.
     """
     if not files_data:
-        logging.warning("No files provided to create zip archive.")
+        logger.warning("No files provided to create zip archive.")
         return None
     try:
         zip_stream = io.BytesIO()
@@ -206,21 +211,21 @@ def create_zip_archive(files_data: list):
         with zipfile.ZipFile(zip_stream, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for filename, file_stream in files_data:
                 if not isinstance(filename, str) or not hasattr(file_stream, 'read'):
-                    logging.warning(f"Skipping invalid data entry in files_data: ({filename}, {type(file_stream)})")
+                    logger.warning(f"Skipping invalid data entry in files_data: ({filename}, {type(file_stream)})")
                     continue
                 try:
                     # Ensure the stream is at the beginning before reading
                     file_stream.seek(0)
                     zipf.writestr(filename, file_stream.read())
-                    logging.info(f"Added '{filename}' to zip archive.")
+                    logger.info(f"Added '{filename}' to zip archive.")
                 except Exception as write_err:
-                    logging.error(f"Error writing file '{filename}' to zip: {write_err}")
+                    logger.error(f"Error writing file '{filename}' to zip: {write_err}", exc_info=True)
                     # Decide if you want to continue or fail the whole zip process
                     # For robustness, let's continue adding other files
 
         zip_stream.seek(0) # Rewind the zip stream
-        logging.info("Successfully created zip archive in memory.")
+        logger.info("Successfully created zip archive in memory.")
         return zip_stream
     except Exception as e:
-        logging.error(f"Error creating zip archive: {e}")
+        logger.error(f"Error creating zip archive: {e}", exc_info=True) # Log traceback
         return None
