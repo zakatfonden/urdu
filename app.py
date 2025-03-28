@@ -41,7 +41,11 @@ def reset_processing_state():
 
 # --- Page Title ---
 st.title("📄 ArabicPDF - PDF to Word Extractor")
-st.markdown("Upload Arabic PDF files, apply rules via Gemini, and download as Word documents.")
+# Updated description to mention image-based PDFs
+st.markdown("Upload Arabic PDF files (text-based or image-based), apply rules via Gemini, and download as Word documents.")
+# Added info box about system dependencies for OCR
+st.info("ℹ️ **Note:** For image-based PDFs (scans), this app uses OCR. This requires **Tesseract OCR engine** (with Arabic language pack) and **Poppler** to be installed on the system where the app is running.")
+
 
 # --- Sidebar for Configuration ---
 st.sidebar.header("⚙️ Configuration")
@@ -88,6 +92,11 @@ rules_prompt = st.sidebar.text_area(
     "Enter the rules Gemini should follow:", value=default_rules, height=250,
     help="Provide clear instructions for how Gemini should process the extracted text."
 )
+
+# --- System Dependency Note in Sidebar ---
+st.sidebar.markdown("---")
+st.sidebar.caption("Requires Tesseract & Poppler for OCR on image-based PDFs.")
+
 
 # --- Main Area for File Upload and Processing ---
 st.header("📁 Upload PDFs")
@@ -180,71 +189,73 @@ if process_button_clicked:
             status_text_placeholder.info(f"🔄 Starting {current_file_status}")
             # logger.info(f"Processing file: {original_filename}")
 
-            # --- START: Original Filename Logic (Renaming Removed) ---
-            # Use the original PDF filename (without extension) as the base for the Word file
+            # --- START: Original Filename Logic ---
             file_name_base = os.path.splitext(original_filename)[0]
             docx_filename = f"{file_name_base}.docx"
             # logger.info(f"Target docx filename will be: '{docx_filename}'")
             # --- END: Original Filename Logic ---
 
-
             with results_container:
                 st.markdown(f"--- \n**Processing: {original_filename}**") # Separator and header
 
-            # 1. Extract Text
-            status_text_placeholder.info(f"📄 Extracting text from {current_file_status}...")
-            raw_text = backend.extract_text_from_pdf(uploaded_file)
+            # 1. Extract Text (Now potentially uses OCR)
+            # Updated status message
+            status_text_placeholder.info(f"📄 Extracting text from {current_file_status} (using PyPDF2/OCR)...")
+            # Ensure the uploader stream is at the start before passing to backend
+            uploaded_file.seek(0)
+            raw_text = backend.extract_text_from_pdf(uploaded_file) # Pass the file obj directly
 
-            if raw_text is None:
+            processed_text = "" # Initialize to handle cases where Gemini isn't called
+            gemini_error_occurred = False # Initialize flag
+
+            # --- Handle Text Extraction Results ---
+            if raw_text is None: # Critical failure (e.g., dependencies missing)
                  with results_container:
-                     st.error(f"❌ Error extracting text. Skipping.")
-                 progress_bar.progress((i + 1) / total_files, text=progress_text + " Error.")
+                     st.error(f"❌ Critical error extracting text (PyPDF2/OCR failed or system dependencies missing). Skipping.")
+                 progress_bar.progress((i + 1) / total_files, text=progress_text + " Extraction Error.")
                  continue # Skip to next file
-
-            processed_text = ""
-            gemini_error_occurred = False
-
-            if not raw_text.strip():
+            elif not raw_text.strip(): # Extraction worked but found nothing (e.g., blank, poor OCR)
                  with results_container:
-                     # Ensure docx_filename is used in the message
-                     st.warning(f"⚠️ No text extracted (PDF might be image-only). Creating empty Word file '{docx_filename}'.")
+                     st.warning(f"⚠️ No text extracted (PDF might be image-only with no OCR results, or truly empty). Creating empty Word file '{docx_filename}'.")
+                 # Proceed to create an empty docx; no Gemini call needed
             else:
-                # 2. Process with Gemini
+                # 2. Process with Gemini (Only if text was extracted successfully)
                 status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini ({model_name})...")
                 processed_text_result = backend.process_text_with_gemini(api_key, model_name, raw_text, rules_prompt)
 
-                if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
+                # Check if the result is an error string (backend now returns "Error: ..." on failure)
+                if isinstance(processed_text_result, str) and processed_text_result.startswith("Error:"):
                      with results_container:
-                         st.error(f"❌ Gemini error: {processed_text_result or 'Unknown API error'}")
+                         st.error(f"❌ Gemini error: {processed_text_result}")
                      gemini_error_occurred = True
+                     # Skip creating a doc for this file on Gemini error
+                     progress_bar.progress((i + 1) / total_files, text=progress_text + " Gemini Error.")
+                     continue # Skip to next file
                 else:
-                     processed_text = processed_text_result
+                     processed_text = processed_text_result # Store the successful result
                      # logger.info(f"Gemini processing successful for {original_filename}.")
 
-            # 3. Create Word Document
-            if not gemini_error_occurred:
-                 # Ensure docx_filename is used in the message
-                status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
-                try:
-                    word_doc_stream = backend.create_word_document(processed_text)
-                    if word_doc_stream:
-                        # Pass the correct docx_filename to be stored for zipping
-                        processed_files_data.append((docx_filename, word_doc_stream))
-                        files_successfully_processed_count += 1
-                        with results_container:
-                            # Use docx_filename in success message
-                            st.success(f"✅ Created '{docx_filename}'")
-                        # logger.info(f"Successfully created and stored '{docx_filename}'.")
-                    else:
-                        with results_container:
-                            # Use docx_filename in error message
-                            st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
-                        # logger.error(f"backend.create_word_document returned None for {original_filename}")
-                except Exception as doc_exc:
-                     with results_container:
-                         # Use original_filename here as it's about the input file causing the doc creation error
-                         st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
-                     # logger.error(f"Exception during Word creation for {original_filename}: {doc_exc}")
+
+            # 3. Create Word Document (Proceed if extraction didn't critically fail and Gemini didn't error)
+            status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
+            try:
+                # Pass the potentially empty processed_text (handles case where extraction found nothing)
+                word_doc_stream = backend.create_word_document(processed_text)
+                if word_doc_stream:
+                    # Pass the correct docx_filename to be stored for zipping
+                    processed_files_data.append((docx_filename, word_doc_stream))
+                    files_successfully_processed_count += 1
+                    with results_container:
+                        st.success(f"✅ Created '{docx_filename}'")
+                    # logger.info(f"Successfully created and stored '{docx_filename}'.")
+                else:
+                    with results_container:
+                        st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
+                    # logger.error(f"backend.create_word_document returned None for {original_filename}")
+            except Exception as doc_exc:
+                 with results_container:
+                     st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
+                 # logger.error(f"Exception during Word creation for {original_filename}: {doc_exc}")
 
             # Update progress bar after file completion or error
             progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}")
