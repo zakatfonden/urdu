@@ -1,109 +1,158 @@
-# app.py
-import streamlit as st
-import backend # Assumes backend.py is in the same directory
-import os
-from io import BytesIO
-import logging # Optional: if you want frontend logging too
+# backend.py
+import io
+import zipfile
+from PyPDF2 import PdfReader
+import google.generativeai as genai
+from docx import Document
+import logging
 
-# ... (rest of imports and config) ...
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Initialize Session State ---
-# ... (session state setup) ...
+# --- PDF Processing ---
+def extract_text_from_pdf(pdf_file_obj):
+    """
+    Extracts text from a PDF file object.
+    Args:
+        pdf_file_obj: A file-like object representing the PDF.
+    Returns:
+        str: The extracted text, or None if extraction fails.
+    """
+    try:
+        pdf_reader = PdfReader(pdf_file_obj)
+        text = ""
+        for page in pdf_reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n" # Add newline between pages
+        logging.info(f"Successfully extracted text from PDF.")
+        # Basic check if extraction yielded *any* text
+        if not text.strip():
+             logging.warning("PDF extraction resulted in empty text. PDF might be image-based or corrupted.")
+             # Return empty string instead of None to avoid downstream errors expecting a string
+             return ""
+        return text
+    except Exception as e:
+        logging.error(f"Error extracting text from PDF: {e}")
+        # Also consider specific PyPDF2 exceptions if needed
+        return None # Indicate failure clearly
 
-# --- Page Title ---
-st.title("📄 ArabicPDF - PDF to Word Extractor")
-st.markdown("Upload Arabic PDF files (text-based or image-based), apply rules via Gemini, and download as Word documents.")
-st.info("ℹ️ **Note:** For image-based PDFs (scans), this app uses OCR. This requires **Tesseract OCR engine** (with Arabic language pack) and **Poppler** to be installed on the system where the app is running.")
+# --- Gemini Processing ---
+def process_text_with_gemini(api_key: str, model_name: str, raw_text: str, rules_prompt: str):
+    """
+    Processes raw text using the Gemini API based on provided rules.
+    Args:
+        api_key (str): The Gemini API key.
+        model_name (str): The Gemini model name (e.g., 'gemini-1.5-flash-latest').
+        raw_text (str): The raw text extracted from the PDF.
+        rules_prompt (str): User-defined rules/instructions for Gemini.
+    Returns:
+        str: The processed text from Gemini, or None if an error occurs.
+    """
+    if not api_key:
+        logging.error("Gemini API key is missing.")
+        return None
+    if not raw_text: # Don't call Gemini if there's no text
+        logging.warning("Skipping Gemini call: No raw text provided.")
+        return "" # Return empty string consistent with extract_text_from_pdf
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+
+        # Construct a clear prompt for Gemini
+        full_prompt = f"""
+        **Instructions:**
+        {rules_prompt}
+
+        **Arabic Text to Process:**
+        ---
+        {raw_text}
+        ---
+
+        **Output:**
+        Return ONLY the processed text according to the instructions. Do not add any introductory phrases like "Here is the processed text:".
+        """
+
+        logging.info(f"Sending request to Gemini model: {model_name}")
+        response = model.generate_content(full_prompt)
+
+        # Handle potential safety blocks or empty responses
+        if not response.parts:
+             if response.prompt_feedback.block_reason:
+                 logging.error(f"Gemini request blocked. Reason: {response.prompt_feedback.block_reason}")
+                 # Optionally, return a specific error message or the block reason
+                 return f"Error: Content blocked by Gemini safety filters. Reason: {response.prompt_feedback.block_reason}"
+             else:
+                 logging.warning("Gemini returned an empty response with no specific block reason.")
+                 return "" # Return empty if response is empty but not blocked
+
+        processed_text = response.text
+        logging.info("Successfully received response from Gemini.")
+        return processed_text
+
+    except Exception as e:
+        logging.error(f"Error interacting with Gemini API: {e}")
+        # Consider returning specific error messages based on exception type
+        return f"Error: Failed to process text with Gemini. Details: {e}"
 
 
-# --- Sidebar for Configuration ---
-st.sidebar.header("⚙️ Configuration")
-# ... (API Key Input) ...
-# ... (Model Selection) ...
-# ... (Extraction Rules) ...
+# --- Word Document Creation ---
+def create_word_document(processed_text: str):
+    """
+    Creates a Word document (.docx) in memory containing the processed text.
+    Args:
+        processed_text (str): The text to put into the document.
+    Returns:
+        io.BytesIO: A BytesIO stream containing the Word document data.
+    """
+    try:
+        document = Document()
+        # Add text. Consider splitting into paragraphs if needed based on newlines.
+        # For simplicity, adding the whole block now.
+        # Set text direction to RTL for Arabic
+        paragraph = document.add_paragraph(processed_text)
+        paragraph_format = paragraph.paragraph_format
+        paragraph_format.alignment = 3 # WD_ALIGN_PARAGRAPH.RIGHT - Use integer value if docx constants are not imported
+        paragraph_format.right_to_left = True
 
-# Add dependency note to sidebar too? Optional.
-st.sidebar.markdown("---")
-st.sidebar.caption("Requires Tesseract & Poppler for OCR on image-based PDFs.")
+        # Set font for the run (optional, ensures Arabic characters render well)
+        run = paragraph.runs[0]
+        font = run.font
+        font.name = 'Arial' # Or Times New Roman, Calibri - common fonts supporting Arabic
 
+        # Save document to a BytesIO stream
+        doc_stream = io.BytesIO()
+        document.save(doc_stream)
+        doc_stream.seek(0) # Rewind the stream to the beginning
+        logging.info("Successfully created Word document in memory.")
+        return doc_stream
+    except Exception as e:
+        logging.error(f"Error creating Word document: {e}")
+        return None
 
-# --- Main Area for File Upload and Processing ---
-# ... (rest of file upload logic) ...
+# --- Zipping Files ---
+def create_zip_archive(files_data: list):
+    """
+    Creates a Zip archive in memory containing multiple files.
+    Args:
+        files_data (list): A list of tuples, where each tuple is
+                           (filename_str, file_bytes_io_obj).
+    Returns:
+        io.BytesIO: A BytesIO stream containing the Zip archive data.
+    """
+    try:
+        zip_stream = io.BytesIO()
+        with zipfile.ZipFile(zip_stream, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for filename, file_stream in files_data:
+                # Ensure the stream is at the beginning before reading
+                file_stream.seek(0)
+                zipf.writestr(filename, file_stream.read())
+                logging.info(f"Added '{filename}' to zip archive.")
 
-# --- Buttons Area ---
-# ... (button logic) ...
-
-# --- UI Elements for Progress ---
-# ... (placeholders) ...
-
-# --- Processing Logic ---
-if process_button_clicked:
-    # ... (start of processing logic) ...
-
-            # 1. Extract Text (Now potentially uses OCR)
-            status_text_placeholder.info(f"📄 Extracting text from {current_file_status} (using PyPDF2/OCR)...") # Updated message
-            # Give the raw uploaded file object to the backend function
-            uploaded_file.seek(0) # Ensure the uploader stream is at the start
-            raw_text = backend.extract_text_from_pdf(uploaded_file) # Pass the file obj directly
-
-            if raw_text is None: # Check for None indicating critical failure
-                 with results_container:
-                     st.error(f"❌ Critical error extracting text (PyPDF2 and OCR failed or dependencies missing). Skipping.")
-                 progress_bar.progress((i + 1) / total_files, text=progress_text + " Extraction Error.")
-                 continue # Skip to next file
-            elif not raw_text.strip(): # Check for empty string (extraction worked but found nothing)
-                 with results_container:
-                     st.warning(f"⚠️ No text extracted (PDF might be image-only with no OCR results, or truly empty). Creating empty Word file '{docx_filename}'.")
-                 # Proceed to create an empty docx
-                 processed_text = ""
-                 gemini_error_occurred = False # No Gemini call needed
-            else:
-                # 2. Process with Gemini (Only if text was extracted)
-                status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini ({model_name})...")
-                processed_text_result = backend.process_text_with_gemini(api_key, model_name, raw_text, rules_prompt)
-
-                # Check if the result is an error string
-                if isinstance(processed_text_result, str) and processed_text_result.startswith("Error:"):
-                     with results_container:
-                         st.error(f"❌ Gemini error: {processed_text_result}")
-                     gemini_error_occurred = True
-                     # Decide if you want to create an empty doc or skip
-                     # Here we'll skip creating doc on Gemini error
-                     progress_bar.progress((i + 1) / total_files, text=progress_text + " Gemini Error.")
-                     continue # Skip to next file
-
-                else:
-                     processed_text = processed_text_result
-                     gemini_error_occurred = False # Reset flag if successful
-                     # logger.info(f"Gemini processing successful for {original_filename}.")
-
-
-            # 3. Create Word Document (Proceed if text extraction worked, even if empty, unless Gemini errored)
-            # No direct changes needed here, just ensure it handles empty processed_text gracefully
-            # which the backend function already does.
-            status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
-            try:
-                # Pass the potentially empty processed_text
-                word_doc_stream = backend.create_word_document(processed_text)
-                if word_doc_stream:
-                    processed_files_data.append((docx_filename, word_doc_stream))
-                    files_successfully_processed_count += 1
-                    with results_container:
-                        st.success(f"✅ Created '{docx_filename}'")
-                else:
-                    with results_container:
-                        st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
-            except Exception as doc_exc:
-                 with results_container:
-                     st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
-
-            # Update progress bar after file completion or error
-            progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}")
-
-    # ... (rest of processing logic: zipping, state updates, etc.) ...
-
-# --- Fallback info message ---
-# ... (fallback message) ...
-
-# --- Footer ---
-# ... (footer) ...
+        zip_stream.seek(0) # Rewind the zip stream
+        logging.info("Successfully created zip archive in memory.")
+        return zip_stream
+    except Exception as e:
+        logging.error(f"Error creating zip archive: {e}")
+        return None
