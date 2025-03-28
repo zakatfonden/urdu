@@ -1,7 +1,7 @@
 streamlit
-google-generativeai
-PyPDF2
+pillow
 python-docx
-pytesseract
-pdf2image
-Pillow
+pymupdf
+google-generativeai
+python-dotenv
+PyArabic
