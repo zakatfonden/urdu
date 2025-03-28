@@ -5,15 +5,15 @@ from io import BytesIO
 import logging  # Optional: if you want frontend logging too
 # import re # REMOVED: No longer needed for renaming
 
-# Configure basic logging if needed for debugging in terminal
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message.
-
-# --- Streamlit Page Configuration ---
+# --- Streamlit Page Configuration (MUST BE FIRST) ---
 st.set_page_config(
     page_title="ArabicPDF",
     page_icon="📄",
     layout="wide"
 )
+
+# Configure basic logging if needed for debugging in terminal
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message.
 
 # --- Initialize Session State ---
 # Ensure keys exist when the app first loads or reloads
@@ -46,7 +46,7 @@ st.markdown("Upload Arabic PDF files, apply rules via Gemini, and download as Wo
 st.sidebar.header("⚙️ Configuration")
 
 # --- API Key Input ---
-api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
+api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "") #moved to AFTER st.set_page_config
 api_key = st.sidebar.text_input(
     "Enter your Google Gemini API Key",
     type="password",
@@ -203,10 +203,11 @@ if process_button_clicked:
                 with results_container:
                     # Ensure docx_filename is used in the message
                     st.warning(
-                        f"⚠️ No text extracted (PDF might be image-only). Creating empty Word file '{docx_filename}'.")
+                        f"⚠️ No text extracted (PDF might be image-only). Attempting OCR...")
             else:
                 # 2. Process with Gemini
-                status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini (gemini-2.0-flash)...") #hardcoded model name
+                status_text_placeholder.info(
+                    f"🤖 Sending text from {current_file_status} to Gemini (gemini-2.0-flash)...")  # hardcoded model name
                 processed_text_result = backend.process_text_with_gemini(api_key, raw_text, rules_prompt)
 
                 if processed_text_result is None or (
