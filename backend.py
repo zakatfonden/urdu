@@ -4,6 +4,8 @@ import io
 import zipfile
 import google.generativeai as genai
 from docx import Document
+# from docx.shared import Inches # Not used currently
+from docx.enum.text import WD_ALIGN_PARAGRAPH # Required for alignment constant
 import logging
 import os  # Required for environment variables
 import streamlit as st # Required for accessing secrets
@@ -49,8 +51,11 @@ if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
                         original_pk = temp_data['private_key']
                         # Replace standalone \r and \r\n with just \n inside the key
                         cleaned_pk = original_pk.replace('\r\n', '\n').replace('\r', '\n')
+                        # Replace literal escaped newlines '\\n' with actual newlines '\n' ONLY WITHIN THE KEY
+                        # This is often needed if the secret was stored with double escapes
+                        cleaned_pk = cleaned_pk.replace('\\n', '\n')
                         if cleaned_pk != original_pk:
-                           logging.warning("Attempted to clean '\\r' characters from private_key string.")
+                           logging.warning("Attempted to clean '\\r' or incorrectly escaped '\\n' characters from private_key string.")
                            temp_data['private_key'] = cleaned_pk
                            # Re-serialize the whole structure with the cleaned key using dumps
                            cleaned_content = json.dumps(temp_data, indent=2) # Use dumps for proper formatting
@@ -63,8 +68,9 @@ if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
                          cleaned_content = credentials_json_content_from_secrets
                 except json.JSONDecodeError:
                     # If initial parse fails, try a more general replace on the raw string (less safe)
+                    # This fallback also tries to fix incorrectly escaped newlines globally
                     logging.warning("Initial parse for targeted cleaning failed. Trying global replace on raw string (less safe).")
-                    cleaned_content = credentials_json_content_from_secrets.replace('\r\n', '\n').replace('\r', '\n')
+                    cleaned_content = credentials_json_content_from_secrets.replace('\r\n', '\n').replace('\r', '\n').replace('\\n', '\n')
                 # --- END CLEANING ATTEMPT ---
 
                 with open(CREDENTIALS_FILENAME, "w", encoding='utf-8') as f:
@@ -97,6 +103,7 @@ if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
                         _credentials_configured = True # Mark configuration as successful ONLY here
                     except json.JSONDecodeError as parse_err:
                         # If this fails, the file content IS invalid JSON.
+                        # THIS WAS THE ORIGINAL ERROR LOCATION IN THE LOGS
                         logging.error(f"Manual JSON parsing of read-back content FAILED: {parse_err}", exc_info=True)
                         _credentials_configured = False # Parsing failed
                     except Exception as manual_parse_generic_err:
@@ -140,7 +147,8 @@ def extract_text_from_pdf(pdf_file_obj):
     Args:
         pdf_file_obj: A file-like object representing the PDF.
     Returns:
-        str: The extracted text. Returns an empty string "" if no text is found.
+        str: The extracted text, with pages separated by double newlines.
+             Returns an empty string "" if no text is found.
              Returns an error string starting with "Error:" if a critical failure occurs.
     """
     global _credentials_configured # Access the flag set during module load
@@ -202,28 +210,58 @@ def extract_text_from_pdf(pdf_file_obj):
             logging.error("Vision API returned an empty response list.")
             return "Error: Vision API returned no response."
 
-        first_response = response.responses[0]
+        # This is the AnnotateFileResponse for your single PDF file
+        first_file_response = response.responses[0]
 
         # Check for errors reported by the API for this specific file
-        if first_response.error.message:
-            error_message = f"Vision API Error for file: {first_response.error.message}"
+        if first_file_response.error.message:
+            error_message = f"Vision API Error for file: {first_file_response.error.message}"
             logging.error(error_message)
             return f"Error: {error_message}" # Return specific API error
 
-        # Extract text from all pages concatenated by the API
-        extracted_text = ""
-        if first_response.full_text_annotation:
-            extracted_text = first_response.full_text_annotation.text
-            logging.info(f"Successfully extracted text using Vision API. Total Length: {len(extracted_text)}")
+        # ---- START: CORRECTED TEXT EXTRACTION LOGIC (Handling pages) ----
+        all_extracted_text = [] # Use a list to collect text from all pages
+
+        # Iterate through the responses for each page within the file
+        # first_file_response.responses contains AnnotateImageResponse objects
+        if not first_file_response.responses:
+             logging.warning("Vision API's AnnotateFileResponse contained an empty inner 'responses' list. No pages processed?")
+             # Return empty string as no text could be extracted if no pages were processed
+             return ""
+
+        for page_index, page_response in enumerate(first_file_response.responses):
+            # Each page_response is an AnnotateImageResponse
+            # Check THIS response for errors specific to the page (less common but possible)
+            if page_response.error.message:
+                logging.warning(f"  > Vision API Error for page {page_index + 1}: {page_response.error.message}")
+                continue # Skip this page's text if it had an error
+
+            # Access full_text_annotation on the page_response (AnnotateImageResponse)
+            if page_response.full_text_annotation:
+                page_text = page_response.full_text_annotation.text
+                all_extracted_text.append(page_text)
+                # Optional: Log per page if needed
+                # logging.info(f"  > Extracted text from page {page_index + 1} (length {len(page_text)}).")
+            # else:
+                # Optional: Log if a specific page had no text
+                # logging.info(f"  > Page {page_index + 1} had no full_text_annotation.")
+
+        # Combine text from all pages. Using double newline as a page separator.
+        extracted_text = "\n\n".join(all_extracted_text)
+
+        if extracted_text:
+            logging.info(f"Successfully extracted text from {len(all_extracted_text)} page(s) using Vision API. Total Length: {len(extracted_text)}")
             # Log first ~100 chars for verification
-            logging.info(f"  > Extracted text snippet: '{extracted_text[:100].replace(chr(10), ' ')}...'") # Replace newlines for cleaner log
+            logging.info(f"  > Combined extracted text snippet: '{extracted_text[:100].replace(chr(10), ' ')}...'") # Replace newlines for cleaner log
             if not extracted_text.strip():
-                 logging.warning("Vision API returned annotation, but extracted text is empty/whitespace.")
+                 logging.warning("Vision API processed pages, but extracted text is empty/whitespace after combining.")
                  return "" # Treat as no text found
             return extracted_text
         else:
-            logging.warning("Vision API response received, but no full_text_annotation found. PDF might have no text content or be corrupted.")
+            # This case means *no page* had a full_text_annotation OR all pages with text had errors
+            logging.warning("Vision API response received, but no usable full_text_annotation found on any page. PDF might have no text content or be corrupted.")
             return "" # No text found, return empty string
+        # ---- END: CORRECTED TEXT EXTRACTION LOGIC ----
 
     except Exception as e:
         # Log the specific error, including traceback
@@ -283,14 +321,20 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 
         # More robust check for valid response content
         if not response.parts:
-            block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+            block_reason = None
+            safety_ratings = None
+            # Check for prompt_feedback first (newer attribute)
+            if hasattr(response, 'prompt_feedback'):
+                 block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+                 safety_ratings = getattr(response.prompt_feedback, 'safety_ratings', None)
+
             if block_reason:
                 block_reason_msg = f"Content blocked by Gemini safety filters. Reason: {block_reason}"
-                logging.error(f"Gemini request blocked. Reason: {block_reason}")
+                logging.error(f"Gemini request blocked. Reason: {block_reason}. Ratings: {safety_ratings}")
                 return f"Error: {block_reason_msg}"
             else:
                 # Check finish reason if available (e.g., 'STOP', 'MAX_TOKENS', 'SAFETY', 'RECITATION', 'OTHER')
-                finish_reason_obj = getattr(response, 'prompt_feedback', None)
+                finish_reason_obj = getattr(response, 'prompt_feedback', None) # Check again for finish reason
                 finish_reason = getattr(finish_reason_obj, 'finish_reason', 'UNKNOWN') if finish_reason_obj else 'UNKNOWN'
                 logging.warning(f"Gemini returned no parts (empty response). Finish Reason: {finish_reason}")
                 # Decide how to handle non-safety empty responses. Returning empty string for now.
@@ -309,6 +353,7 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 def create_word_document(processed_text: str):
     """
     Creates a Word document (.docx) in memory containing the processed text.
+    Sets paragraph alignment to right and text direction to RTL for Arabic.
     Args:
         processed_text (str): The text to put into the document.
     Returns:
@@ -322,8 +367,7 @@ def create_word_document(processed_text: str):
 
         # Set paragraph alignment to right and direction to RTL for Arabic
         paragraph_format = paragraph.paragraph_format
-        # WD_ALIGN_PARAGRAPH.RIGHT is 2
-        paragraph_format.alignment = 2
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT # Use the imported constant
         paragraph_format.right_to_left = True
 
         # Apply font settings to all runs within the paragraph
@@ -331,6 +375,8 @@ def create_word_document(processed_text: str):
         for run in paragraph.runs:
             font = run.font
             font.name = 'Arial'  # Choose a font known to support Arabic well (Arial, Times New Roman, Calibri)
+            # Set complex script font as well for robustness with Arabic
+            font.complex_script = True
             font.rtl = True # Explicitly set run font direction
 
         # Save document to a BytesIO stream
