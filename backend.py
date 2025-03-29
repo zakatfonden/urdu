@@ -7,7 +7,7 @@ from docx import Document
 import logging
 import os  # Required for environment variables
 import streamlit as st # Required for accessing secrets
-import json # Required for manual JSON parsing test
+import json # Required for manual JSON parsing test and potential cleaning
 
 # Import the Google Cloud Vision client library
 from google.cloud import vision
@@ -36,15 +36,44 @@ if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
              logging.error("GOOGLE_CREDENTIALS_JSON secret is empty.")
              _credentials_configured = False
         else:
-            # 2. Write the file
+            # 2. Write the file with potential cleaning
             file_written_successfully = False
             try:
+                # --- START CLEANING ATTEMPT ---
+                cleaned_content = credentials_json_content_from_secrets
+                try:
+                    # Attempt to parse to find the private key and clean it specifically
+                    # Use loads first to work with the python object
+                    temp_data = json.loads(credentials_json_content_from_secrets)
+                    if 'private_key' in temp_data and isinstance(temp_data['private_key'], str):
+                        original_pk = temp_data['private_key']
+                        # Replace standalone \r and \r\n with just \n inside the key
+                        cleaned_pk = original_pk.replace('\r\n', '\n').replace('\r', '\n')
+                        if cleaned_pk != original_pk:
+                           logging.warning("Attempted to clean '\\r' characters from private_key string.")
+                           temp_data['private_key'] = cleaned_pk
+                           # Re-serialize the whole structure with the cleaned key using dumps
+                           cleaned_content = json.dumps(temp_data, indent=2) # Use dumps for proper formatting
+                        else:
+                           # If no cleaning needed, keep original content (avoids re-serializing if unnecessary)
+                            cleaned_content = credentials_json_content_from_secrets
+                    else:
+                         logging.warning("Could not find 'private_key' field (or it's not a string) in parsed secret data for cleaning.")
+                         # Keep original content if key not found or not string
+                         cleaned_content = credentials_json_content_from_secrets
+                except json.JSONDecodeError:
+                    # If initial parse fails, try a more general replace on the raw string (less safe)
+                    logging.warning("Initial parse for targeted cleaning failed. Trying global replace on raw string (less safe).")
+                    cleaned_content = credentials_json_content_from_secrets.replace('\r\n', '\n').replace('\r', '\n')
+                # --- END CLEANING ATTEMPT ---
+
                 with open(CREDENTIALS_FILENAME, "w", encoding='utf-8') as f:
-                    f.write(credentials_json_content_from_secrets)
-                logging.info(f"Successfully wrote credentials to {CREDENTIALS_FILENAME} using UTF-8 encoding.")
+                    # Write the potentially cleaned content
+                    f.write(cleaned_content)
+                logging.info(f"Successfully wrote potentially cleaned credentials to {CREDENTIALS_FILENAME} using UTF-8 encoding.")
                 file_written_successfully = True
             except Exception as write_err:
-                 logging.error(f"CRITICAL Error during file writing: {write_err}", exc_info=True)
+                 logging.error(f"CRITICAL Error during file writing (with cleaning attempt): {write_err}", exc_info=True)
                  _credentials_configured = False # Ensure flag is false on write error
 
             # 3. If written, read back immediately and verify/parse
