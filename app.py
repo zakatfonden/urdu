@@ -3,7 +3,7 @@ import backend  # Assumes backend.py is in the same directory
 import os
 from io import BytesIO
 import logging  # Optional: if you want frontend logging too
-# import re # REMOVED: No longer needed for renaming
+import pandas as pd # <-- ADDED IMPORT
 
 # Configure basic logging if needed for debugging in terminal
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message.
@@ -132,11 +132,25 @@ with col2:
         )
         # logger.info("Download button rendered.")
 
+# --- NEW: Display Uploaded Files List ---
+if uploaded_files:
+    st.markdown("---") # Optional separator
+    st.subheader(f"Uploaded Files ({len(uploaded_files)}):")
+    # Create a list of filenames
+    filenames = [file.name for file in uploaded_files]
+    # Create a Pandas DataFrame
+    df_files = pd.DataFrame({'Filename': filenames})
+    # Display the DataFrame as a table. Set a height to make it scrollable.
+    # Adjust the height pixels as needed.
+    st.dataframe(df_files, use_container_width=True, height=300) # Adjust height=XXX if needed
+# --- END NEW SECTION ---
+
+
 # --- UI Elements for Progress ---
 # Placeholders need to be defined *before* the processing logic that might update them
 progress_bar_placeholder = st.empty()
 status_text_placeholder = st.empty()
-results_container = st.container()
+results_container = st.container() # Container to show individual file results
 
 # --- Processing Logic ---
 if process_button_clicked:
@@ -156,7 +170,7 @@ if process_button_clicked:
         st.warning("⚠️ The 'Extraction Rules' field is empty. Processing without specific instructions.")
         # Proceed even if rules are empty, so don't reset flag here
 
-    # Only proceed if files are uploaded AND API key is present
+    # Only proceed if files are uploaded AND API key is present AND processing started flag is set
     if uploaded_files and api_key and st.session_state.processing_started:
         # logger.info(f"Starting processing loop for {len(uploaded_files)} files.")
         st.info(f"Processing {len(uploaded_files)} PDF file(s)...")  # General start message
@@ -176,46 +190,45 @@ if process_button_clicked:
             status_text_placeholder.info(f"🔄 Starting {current_file_status}")
             # logger.info(f"Processing file: {original_filename}")
 
-            # --- START: Original Filename Logic (Renaming Removed) ---
             # Use the original PDF filename (without extension) as the base for the Word file
             file_name_base = os.path.splitext(original_filename)[0]
             docx_filename = f"{file_name_base}.docx"
             # logger.info(f"Target docx filename will be: '{docx_filename}'")
-            # --- END: Original Filename Logic ---
 
             with results_container:
-                st.markdown(f"--- \n**Processing: {original_filename}**")  # Separator and header
+                st.markdown(f"--- \n**Processing: {original_filename}**") # Separator and header
 
             # 1. Extract Text
             status_text_placeholder.info(f"📄 Extracting text from {current_file_status}...")
-            # Clone the uploaded file object to prevent issues with stream being read multiple times
-            # if needed elsewhere or if extraction fails and needs retry (though not implemented here)
             file_clone_for_extraction = BytesIO(uploaded_file.getvalue())
             raw_text = backend.extract_text_from_pdf(file_clone_for_extraction) # Use the clone
 
-            if raw_text is None:
+            if raw_text is None: # Treat None as critical error from backend
                 with results_container:
-                    st.error(f"❌ Error extracting text. Skipping '{original_filename}'.")
+                    st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
                 progress_bar.progress((i + 1) / total_files, text=progress_text + " Error.")
                 continue  # Skip to next file
+            elif isinstance(raw_text, str) and raw_text.startswith("Error:"): # Backend signals specific error
+                with results_container:
+                    st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
+                progress_bar.progress((i + 1) / total_files, text=progress_text + " Error.")
+                continue # Skip to next file
 
+            # Initialize variables for this file iteration
             processed_text = ""
             gemini_error_occurred = False
+            word_creation_error_occurred = False
 
             if not raw_text.strip():
                 with results_container:
-                    # Ensure docx_filename is used in the message
-                    st.warning(
-                        f"⚠️ No text extracted (PDF might be image-only). Creating empty Word file '{docx_filename}'.")
+                    st.warning(f"⚠️ No text extracted (PDF might be image-only or extraction failed silently). Creating empty Word file '{docx_filename}'.")
+                processed_text = "" # Ensure processed_text is empty string for empty doc creation
             else:
                 # 2. Process with Gemini
-                # Displaying hardcoded model name in status as backend uses it
                 status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini (gemini-1.5-flash)...")
-                # --- FIX APPLIED HERE: Removed model_name argument ---
                 processed_text_result = backend.process_text_with_gemini(api_key, raw_text, rules_prompt)
-                # -----------------------------------------------------
 
-                # Check if the result indicates an error (backend returns "Error: ..." strings)
+                # Check if the result indicates an error (backend returns "Error: ..." strings or None)
                 if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
                     with results_container:
                         st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
@@ -224,34 +237,35 @@ if process_button_clicked:
                     processed_text = processed_text_result
                     # logger.info(f"Gemini processing successful for {original_filename}.")
 
-            # 3. Create Word Document
+            # 3. Create Word Document (Only if Gemini didn't have a blocking error)
             if not gemini_error_occurred:
-                # Ensure docx_filename is used in the message
                 status_text_placeholder.info(f"📝 Creating Word document '{docx_filename}'...")
                 try:
-                    word_doc_stream = backend.create_word_document(processed_text)
+                    word_doc_stream = backend.create_word_document(processed_text) # Use potentially empty processed_text
                     if word_doc_stream:
                         # Pass the correct docx_filename to be stored for zipping
                         processed_files_data.append((docx_filename, word_doc_stream))
                         files_successfully_processed_count += 1
                         with results_container:
-                            # Use docx_filename in success message
-                            st.success(f"✅ Created '{docx_filename}'")
+                             # Add success message even for potentially empty docs if creation succeeded
+                            st.success(f"✅ Created '{docx_filename}'" + (" (Note: Source text was empty)" if not raw_text.strip() else ""))
                         # logger.info(f"Successfully created and stored '{docx_filename}'.")
-                    else:
-                        with results_container:
-                            # Use docx_filename in error message
-                            st.error(
-                                f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
-                        # logger.error(f"backend.create_word_document returned None for {original_filename}")
+                    else: # backend.create_word_document returned None
+                         word_creation_error_occurred = True
+                         with results_container:
+                            st.error(f"❌ Failed to create Word stream for '{docx_filename}' (backend returned None).")
+                         # logger.error(f"backend.create_word_document returned None for {original_filename}")
                 except Exception as doc_exc:
+                    word_creation_error_occurred = True
                     with results_container:
-                        # Use original_filename here as it's about the input file causing the doc creation error
                         st.error(f"❌ Error during Word document creation for '{original_filename}': {doc_exc}")
                     # logger.error(f"Exception during Word creation for {original_filename}: {doc_exc}")
 
             # Update progress bar after file completion or error
-            progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}")
+            status_msg_suffix = ""
+            if gemini_error_occurred or word_creation_error_occurred or (isinstance(raw_text, str) and raw_text.startswith("Error:")):
+                 status_msg_suffix = " Error."
+            progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}{status_msg_suffix}")
 
         # --- End of file loop ---
         # logger.info("Processing loop finished.")
@@ -274,7 +288,7 @@ if process_button_clicked:
                     final_status_message = f"✅ Processing complete! {files_successfully_processed_count} file(s) ready. Click 'Download All' above."
                     results_container.success(final_status_message)
                     # logger.info("Zip created successfully, state updated.")
-                    rerun_needed = True  # Set flag to rerun
+                    rerun_needed = True  # Set flag to rerun to show download button
                 else:
                     final_status_message = "❌ Failed to create zip archive (backend returned None)."
                     results_container.error(final_status_message)
@@ -289,6 +303,10 @@ if process_button_clicked:
             final_status_message = "⚠️ No files were successfully processed to include in a zip archive."
             results_container.warning(final_status_message)
             # logger.warning(final_status_message)
+            # Check if there were uploads but no successful processing
+            if uploaded_files:
+                 results_container.info("Please check the individual file statuses above for errors.")
+
 
         # Update final state variables AFTER the loop and zipping attempt
         st.session_state.processing_complete = True
@@ -302,11 +320,13 @@ if process_button_clicked:
         # If no rerun happens, the script finishes here, and the UI reflects the final state
 
     else:
-        # Case where processing didn't start due to initial checks failing
-        # Ensure processing_started is False if it wasn't already reset
-        st.session_state.processing_started = False
+        # Case where processing didn't start due to initial checks failing (e.g., no API key, no files)
+        # Ensure processing_started is False if it wasn't already reset by the checks
+        if not uploaded_files or not api_key:
+             st.session_state.processing_started = False
 
 # --- Fallback info message ---
+# Display only if no files are uploaded AND processing isn't active or just completed
 if not uploaded_files and not st.session_state.processing_started and not st.session_state.processing_complete:
     st.info("Upload PDF files, configure settings, and click 'Process PDFs'.")
 
