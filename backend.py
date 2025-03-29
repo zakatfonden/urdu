@@ -2,57 +2,112 @@
 
 import io
 import zipfile
-# from PyPDF2 import PdfReader # REMOVE THIS LINE
-import fitz  # PyMuPDF # ADD THIS LINE
+# import fitz # No longer needed for extraction if fully replacing
 import google.generativeai as genai
 from docx import Document
 import logging
+import os # Needed for environment variable check
+
+# Import the Google Cloud Vision client library
+from google.cloud import vision
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- PDF Processing ---
+# --- PDF/Image Processing with Google Cloud Vision ---
 def extract_text_from_pdf(pdf_file_obj):
     """
-    Extracts text from a PDF file object using PyMuPDF (fitz).
+    Extracts text from a PDF file object using Google Cloud Vision API OCR.
+    Handles both text-based and image-based PDFs.
     Args:
         pdf_file_obj: A file-like object representing the PDF.
     Returns:
-        str: The extracted text, or None if extraction fails.
+        str: The extracted text, or None if extraction fails critically.
+             Returns an error string starting with "Error:" for API-specific issues.
     """
-    try:
-        # PyMuPDF needs bytes, so read the file object's content
-        pdf_bytes = pdf_file_obj.read()
-        text = ""
-        # Open the PDF from bytes
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            logging.info(f"Opened PDF with PyMuPDF. Pages: {doc.page_count}")
-            for page_num in range(len(doc)): # Iterate through pages
-                page = doc.load_page(page_num)
-                page_text = page.get_text("text") # Extract text from page
-                if page_text:
-                    text += page_text + "\n" # Add newline between pages
+    # Check if credentials environment variable is set
+    if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+        logging.error("GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+        return "Error: Vision API authentication not configured (GOOGLE_APPLICATION_CREDENTIALS missing)."
 
-        logging.info(f"Successfully extracted text using PyMuPDF.")
-        # Basic check if extraction yielded *any* text
-        if not text.strip():
-            logging.warning("PyMuPDF extraction resulted in empty text. PDF might be image-based or corrupted.")
-            # Return empty string instead of None to avoid downstream errors expecting a string
-            return ""
-        return text
+    try:
+        logging.info("Initializing Google Cloud Vision client...")
+        client = vision.ImageAnnotatorClient()
+        logging.info("Client initialized.")
+
+        # Ensure stream is at the beginning and read content
+        pdf_file_obj.seek(0)
+        content = pdf_file_obj.read()
+        logging.info(f"Read {len(content)} bytes from PDF stream.")
+
+        if not content:
+            logging.error("PDF content is empty.")
+            return "" # Return empty string if the file itself was empty
+
+        # Prepare the input config for PDF
+        # Vision API handles PDF directly for document text detection
+        mime_type = "application/pdf"
+        input_config = vision.InputConfig(content=content, mime_type=mime_type)
+
+        # Specify the feature type: DOCUMENT_TEXT_DETECTION for dense text/OCR
+        features = [vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)]
+
+        # Set context hints if needed (e.g., language) - useful for Arabic
+        image_context = vision.ImageContext(language_hints=["ar"]) # Hint that the language is Arabic
+
+        # Construct the request
+        request = vision.AnnotateFileRequest(
+            input_config=input_config,
+            features=features,
+            image_context=image_context # Add language hint context
+        )
+
+        logging.info("Sending request to Google Cloud Vision API (batch_annotate_files)...")
+        # Use batch_annotate_files for document types like PDF
+        response = client.batch_annotate_files(requests=[request])
+        logging.info("Received response from Vision API.")
+
+        # Process the first (and only) response in the batch
+        if response.responses:
+            first_response = response.responses[0]
+            # Check for errors reported by the API for this specific file
+            if first_response.error.message:
+                error_message = f"Vision API Error for file: {first_response.error.message}"
+                logging.error(error_message)
+                return f"Error: {error_message}" # Return specific API error
+
+            # Check if full text annotation exists
+            if first_response.full_text_annotation:
+                extracted_text = first_response.full_text_annotation.text
+                logging.info(f"Successfully extracted text using Vision API. Length: {len(extracted_text)}")
+                # Log first 100 chars for verification
+                logging.info(f"  > Extracted text (first 100 chars): '{extracted_text[:100]}...'")
+                if not extracted_text.strip():
+                     logging.warning("Vision API returned annotation, but extracted text is empty/whitespace.")
+                     return ""
+                return extracted_text
+            else:
+                logging.warning("Vision API response received, but no full_text_annotation found. PDF might have no text content.")
+                return "" # No text found, return empty string
+        else:
+             logging.error("Vision API returned an empty response list.")
+             return "Error: Vision API returned no response."
+
+
     except Exception as e:
-        # Log the specific error using fitz details if possible
-        logging.error(f"Error extracting text from PDF using PyMuPDF: {e}")
-        return None # Indicate failure clearly
+        # Log the specific error
+        logging.error(f"CRITICAL Error during Vision API interaction: {e}", exc_info=True) # Log traceback
+        return f"Error: Failed to process PDF with Vision API. Details: {e}" # Return specific exception
 
 
 # --- Gemini Processing ---
+# Keep this function as it was, it uses the Gemini API key from the UI
 def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
     """
     Processes raw text using the Gemini API based on provided rules.
     Args:
-        api_key (str): The Gemini API key.
-        raw_text (str): The raw text extracted from the PDF.
+        api_key (str): The Gemini API key (from Streamlit input).
+        raw_text (str): The raw text extracted from the PDF (by Vision API now).
         rules_prompt (str): User-defined rules/instructions for Gemini.
     Returns:
         str: The processed text from Gemini, or an error string if an error occurs.
@@ -60,19 +115,17 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
     """
     if not api_key:
         logging.error("Gemini API key is missing.")
-        # Return an error message consistent with other potential errors
         return "Error: Gemini API key is missing."
-    if not raw_text:  # Don't call Gemini if there's no text
-        logging.warning("Skipping Gemini call: No raw text provided.")
-        return ""  # Return empty string consistent with extract_text_from_pdf
+    if not raw_text:
+        logging.warning("Skipping Gemini call: No raw text provided (likely from Vision API).")
+        return ""
 
     try:
         genai.configure(api_key=api_key)
-        # Hardcoded model name remains as per previous code
+        # Hardcoded model name (or make this configurable again if desired)
         model_name = "gemini-1.5-flash-latest"
         model = genai.GenerativeModel(model_name)
 
-        # Construct a clear prompt for Gemini
         full_prompt = f"""
         **Instructions:**
         {rules_prompt}
@@ -89,15 +142,14 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
         logging.info(f"Sending request to Gemini model: {model_name}")
         response = model.generate_content(full_prompt)
 
-        # Handle potential safety blocks or empty responses
         if not response.parts:
             if response.prompt_feedback.block_reason:
                 block_reason_msg = f"Content blocked by Gemini safety filters. Reason: {response.prompt_feedback.block_reason}"
                 logging.error(f"Gemini request blocked. Reason: {response.prompt_feedback.block_reason}")
-                return f"Error: {block_reason_msg}" # Return specific block reason
+                return f"Error: {block_reason_msg}"
             else:
                 logging.warning("Gemini returned an empty response with no specific block reason.")
-                return ""  # Return empty if response is empty but not blocked
+                return ""
 
         processed_text = response.text
         logging.info("Successfully received response from Gemini.")
@@ -105,11 +157,11 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 
     except Exception as e:
         logging.error(f"Error interacting with Gemini API: {e}")
-        # Return a user-friendly error string
         return f"Error: Failed to process text with Gemini. Details: {e}"
 
 
 # --- Word Document Creation ---
+# No changes needed here
 def create_word_document(processed_text: str):
     """
     Creates a Word document (.docx) in memory containing the processed text.
@@ -120,26 +172,19 @@ def create_word_document(processed_text: str):
     """
     try:
         document = Document()
-        # Add text.
-        # Set text direction to RTL for Arabic
         paragraph = document.add_paragraph(processed_text)
         paragraph_format = paragraph.paragraph_format
-        # Use integer value 3 for WD_ALIGN_PARAGRAPH.RIGHT to avoid importing docx.enum.text
-        paragraph_format.alignment = 3
+        paragraph_format.alignment = 3  # WD_ALIGN_PARAGRAPH.RIGHT
         paragraph_format.right_to_left = True
 
-        # Set font for the run(s) within the paragraph
-        # Iterate through runs in case the text properties were split
         for run in paragraph.runs:
             font = run.font
-            font.name = 'Arial'  # Or Times New Roman, Calibri - common fonts supporting Arabic
-            # Ensure RTL setting is applied to the run font as well (sometimes needed)
+            font.name = 'Arial'
             font.rtl = True
 
-        # Save document to a BytesIO stream
         doc_stream = io.BytesIO()
         document.save(doc_stream)
-        doc_stream.seek(0)  # Rewind the stream to the beginning
+        doc_stream.seek(0)
         logging.info("Successfully created Word document in memory.")
         return doc_stream
     except Exception as e:
@@ -148,6 +193,7 @@ def create_word_document(processed_text: str):
 
 
 # --- Zipping Files ---
+# No changes needed here
 def create_zip_archive(files_data: list):
     """
     Creates a Zip archive in memory containing multiple files.
@@ -159,15 +205,13 @@ def create_zip_archive(files_data: list):
     """
     try:
         zip_stream = io.BytesIO()
-        # Use context manager for ZipFile
         with zipfile.ZipFile(zip_stream, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for filename, file_stream in files_data:
-                # Ensure the stream is at the beginning before reading
                 file_stream.seek(0)
                 zipf.writestr(filename, file_stream.read())
                 logging.info(f"Added '{filename}' to zip archive.")
 
-        zip_stream.seek(0)  # Rewind the zip stream
+        zip_stream.seek(0)
         logging.info("Successfully created zip archive in memory.")
         return zip_stream
     except Exception as e:
