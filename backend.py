@@ -26,38 +26,75 @@ _credentials_configured = False # Flag to track if setup was attempted
 # This indicates we're likely running in an environment where secrets are provided (like Streamlit Cloud)
 if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
     logging.info("Found GOOGLE_CREDENTIALS_JSON in Streamlit Secrets. Setting up credentials file.")
+    # --- START: Modified try...except block with debugging ---
     try:
-        # Read the JSON content from secrets
         credentials_json_content = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+        logging.info(f"Read {len(credentials_json_content)} characters from secret.")
+
+        # --- START DEBUG LOGGING ---
+        # Log the specific line and character if possible
+        try:
+            lines = credentials_json_content.splitlines()
+            if len(lines) >= 5:
+                line_5 = lines[4] # Line 5 is index 4
+                logging.info(f"Secret content LINE 5 ({len(line_5)} chars):\n>>>\n{line_5}\n<<<")
+                if len(line_5) >= 46:
+                    # Log char 46 (index 45) and surrounding chars
+                    start_idx = max(0, 45 - 15) # Show more context
+                    end_idx = min(len(line_5), 45 + 16)
+                    snippet = line_5[start_idx:end_idx]
+                    char_at_46 = line_5[45] # Column 46 is index 45
+                    # Try to get the ASCII/Unicode code point
+                    try:
+                        char_code = ord(char_at_46)
+                    except TypeError:
+                        char_code = "N/A (Multi-byte?)"
+                    logging.info(f"Suspect character at line 5, col 46 (index 45): '{char_at_46}' (Code point: {char_code})")
+                    logging.info(f"Surrounding snippet (indices {start_idx}-{end_idx-1}):\n>>>\n{snippet}\n<<<")
+                else:
+                    logging.warning(f"Line 5 is too short (len {len(line_5)}) to have column 46.")
+            else:
+                 logging.warning("Secret content has less than 5 lines.")
+        except Exception as analyze_err:
+            logging.error(f"Error trying to split/analyze secret content lines for debugging: {analyze_err}")
+        # --- END DEBUG LOGGING ---
 
         if not credentials_json_content.strip():
              logging.error("GOOGLE_CREDENTIALS_JSON secret is empty.")
+             _credentials_configured = False # Ensure flag is false if empty
         else:
-            # Write the JSON content to the temporary file
-            with open(CREDENTIALS_FILENAME, "w") as f:
-                f.write(credentials_json_content)
+            # Explicitly write with UTF-8 encoding
+            try:
+                with open(CREDENTIALS_FILENAME, "w", encoding='utf-8') as f:
+                    f.write(credentials_json_content)
+                logging.info(f"Successfully wrote credentials to {CREDENTIALS_FILENAME} using UTF-8 encoding.")
 
-            # Set the environment variable to point to the created file
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_FILENAME
-            logging.info(f"GOOGLE_APPLICATION_CREDENTIALS set to point to: {CREDENTIALS_FILENAME}")
-            _credentials_configured = True # Mark configuration as successful
+                # Set the environment variable AFTER successful write
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_FILENAME
+                logging.info(f"GOOGLE_APPLICATION_CREDENTIALS set to point to: {CREDENTIALS_FILENAME}")
+                _credentials_configured = True # Mark configuration as successful ONLY here
+
+            except Exception as write_err:
+                 logging.error(f"CRITICAL Error during file writing: {write_err}", exc_info=True)
+                 _credentials_configured = False # Ensure flag is false on write error
 
     except Exception as e:
-        logging.error(f"CRITICAL Error: Failed to create credentials file from secrets: {e}", exc_info=True)
-        # The Vision client initialization later will likely fail.
-        # No need to set _credentials_configured = True
+        # This catches errors reading from st.secrets or the debug logging itself
+        logging.error(f"CRITICAL Error reading secret or during debug logging: {e}", exc_info=True)
+        _credentials_configured = False # Ensure flag is false on general errors here
+    # --- END: Modified try...except block ---
 
 elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
     # If running locally or elsewhere where the env var is set directly
     logging.info("Using GOOGLE_APPLICATION_CREDENTIALS environment variable set externally.")
     # We assume it's configured correctly if the env var exists
     # Check if the path actually exists for better local debugging
-    if os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
+    if os.environ["GOOGLE_APPLICATION_CREDENTIALS"] and os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
         logging.info(f"External credentials file found at: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}")
         _credentials_configured = True
     else:
-        logging.error(f"External GOOGLE_APPLICATION_CREDENTIALS path not found: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}")
-        # _credentials_configured remains False
+        logging.error(f"External GOOGLE_APPLICATION_CREDENTIALS path not found or not set: {os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')}")
+        _credentials_configured = False
 
 else:
     # Neither Streamlit secret nor external env var found
@@ -88,11 +125,12 @@ def extract_text_from_pdf(pdf_file_obj):
     # Double-check the environment variable just before client initialization
     credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not credentials_path or not os.path.exists(credentials_path):
-         logging.error(f"Credentials check failed: GOOGLE_APPLICATION_CREDENTIALS path '{credentials_path}' not valid or file doesn't exist.")
-         return "Error: Vision API credentials file missing or inaccessible."
+         # Log the specific path being checked
+         logging.error(f"Credentials check failed just before client init: GOOGLE_APPLICATION_CREDENTIALS path '{credentials_path}' not valid or file doesn't exist.")
+         return "Error: Vision API credentials file missing or inaccessible at runtime."
 
     try:
-        logging.info("Initializing Google Cloud Vision client...")
+        logging.info(f"Initializing Google Cloud Vision client using credentials file: {credentials_path}")
         # The client automatically uses the GOOGLE_APPLICATION_CREDENTIALS environment variable
         client = vision.ImageAnnotatorClient()
         logging.info("Vision client initialized successfully.")
@@ -159,10 +197,10 @@ def extract_text_from_pdf(pdf_file_obj):
             return "" # No text found, return empty string
 
     except Exception as e:
-        # Log the specific error
-        logging.error(f"CRITICAL Error during Vision API interaction: {e}", exc_info=True) # Log traceback
-        # Provide a user-friendly error message
-        return f"Error: Failed to process PDF with Vision API. Check logs for details. Exception: {e}"
+        # Log the specific error, including traceback
+        logging.error(f"CRITICAL Error during Vision API interaction: {e}", exc_info=True)
+        # Provide a user-friendly error message that includes the exception text
+        return f"Error: Failed to process PDF with Vision API. Exception: {e}"
 
 
 # --- Gemini Processing ---
@@ -222,7 +260,8 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
                 return f"Error: {block_reason_msg}"
             else:
                 # Check finish reason if available (e.g., 'STOP', 'MAX_TOKENS', 'SAFETY', 'RECITATION', 'OTHER')
-                finish_reason = getattr(response, 'finish_reason', 'UNKNOWN')
+                finish_reason_obj = getattr(response, 'prompt_feedback', None)
+                finish_reason = getattr(finish_reason_obj, 'finish_reason', 'UNKNOWN') if finish_reason_obj else 'UNKNOWN'
                 logging.warning(f"Gemini returned no parts (empty response). Finish Reason: {finish_reason}")
                 # Decide how to handle non-safety empty responses. Returning empty string for now.
                 return ""
@@ -253,7 +292,8 @@ def create_word_document(processed_text: str):
 
         # Set paragraph alignment to right and direction to RTL for Arabic
         paragraph_format = paragraph.paragraph_format
-        paragraph_format.alignment = 3  # WD_ALIGN_PARAGRAPH.RIGHT (avoiding enum import)
+        # WD_ALIGN_PARAGRAPH.RIGHT is 2, not 3. Corrected.
+        paragraph_format.alignment = 2
         paragraph_format.right_to_left = True
 
         # Apply font settings to all runs within the paragraph
