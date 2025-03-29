@@ -366,11 +366,11 @@ def create_word_document(processed_text: str):
         return None # Indicate failure to create the document stream
 
 
-# --- NEW Merging Function using docxcompose ---
+# --- UPDATED Merging Function using docxcompose (No Headers/Page Breaks) ---
 def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
     """
-    Merges multiple Word documents (provided as BytesIO streams) into one single document.
-    Uses docxcompose library and adds separators between documents.
+    Merges multiple Word documents (provided as BytesIO streams) into one single document
+    by direct concatenation without adding separators. Uses docxcompose library.
 
     Args:
         doc_streams_data (list[tuple[str, io.BytesIO]]): A list of tuples,
@@ -392,32 +392,11 @@ def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
         master_doc = Document(first_stream)
         logging.info(f"Loaded base document from '{first_filename}'.")
 
-        # --- Add Heading for the first file to the master doc ---
-        # Insert a heading at the very beginning of the master document
-        base_filename = os.path.basename(first_filename)
-        heading_text = f"--- Content from: {base_filename} ---"
-        # Insert paragraph at the beginning (index 0) and style it
-        heading_paragraph = master_doc.paragraphs[0].insert_paragraph_before(heading_text)
-        try:
-             # Attempt to apply Heading 2 style
-             heading_paragraph.style = master_doc.styles['Heading 2']
-        except KeyError:
-             logging.warning("Style 'Heading 2' not found. Applying formatting manually.")
-             # Manual formatting if style not found (less ideal)
-             heading_paragraph.runs[0].font.bold = True
-             heading_paragraph.runs[0].font.size = Pt(13) # Example size
+        # --- REMOVED: Code that added heading for the first file ---
 
-        heading_format = heading_paragraph.paragraph_format
-        heading_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        heading_format.right_to_left = True # Ensure heading is RTL too
-        for run in heading_paragraph.runs:
-             run.font.name = 'Arial' # Ensure font consistency
-             run.font.rtl = True
-             run.font.complex_script = True
-
-        # Create the Composer using the *modified* first document as the base
+        # Create the Composer using the unmodified first document as the base
         composer = Composer(master_doc)
-        logging.info(f"Initialized merger with modified base document.")
+        logging.info(f"Initialized merger with base document.")
 
 
         # --- Append remaining documents ---
@@ -425,26 +404,14 @@ def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
         for i in range(1, len(doc_streams_data)):
             filename, stream = doc_streams_data[i]
             stream.seek(0)
-            logging.info(f"Merging content from '{filename}'...")
+            logging.info(f"Merging content directly from '{filename}'...")
 
             # Load the next document stream into a Document object
             sub_doc = Document(stream)
 
-            # --- Add Separator (Page Break and Heading) BEFORE appending ---
-            # Add these to the *composer's* document (master_doc)
-            composer.doc.add_page_break()
-            base_filename = os.path.basename(filename)
-            heading_text = f"--- Content from: {base_filename} ---"
-            heading = composer.doc.add_heading(heading_text, level=2) # Use built-in heading method here
-            heading_format = heading.paragraph_format
-            heading_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            heading_format.right_to_left = True
-            for run in heading.runs:
-                 run.font.name = 'Arial'
-                 run.font.rtl = True
-                 run.font.complex_script = True
+            # --- REMOVED: Code that added page break and heading before appending ---
 
-            # --- Append the sub-document ---
+            # --- Append the sub-document directly ---
             # The append method handles merging content and styles
             composer.append(sub_doc)
             logging.info(f"Successfully appended content from '{filename}'.")
@@ -454,7 +421,7 @@ def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
         merged_stream = io.BytesIO()
         composer.save(merged_stream)
         merged_stream.seek(0)
-        logging.info(f"Successfully merged {len(doc_streams_data)} documents.")
+        logging.info(f"Successfully merged {len(doc_streams_data)} documents by concatenation.")
         return merged_stream
 
     except Exception as e:
