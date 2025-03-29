@@ -1,4 +1,4 @@
-# app.py (Updated with Remove All Button and Progress Bar Repositioning)
+# app.py (Corrected Remove Button and Progress Bar Position)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
@@ -37,14 +37,15 @@ def reset_processing_state():
     st.session_state.processing_started = False
     # logger.info("Processing state reset.")
 
-# --- NEW: Callback function to clear uploads ---
+# --- Callback function to clear uploads ---
 def clear_uploads_callback():
     """Clears the file uploader and resets processing state."""
-    st.session_state.pdf_uploader = [] # Clear the file uploader widget's state
+    # Check if the key exists in session state before trying to clear
+    if 'pdf_uploader' in st.session_state:
+        st.session_state.pdf_uploader = [] # Clear the file uploader widget's state
     reset_processing_state() # Reset our custom processing state
     st.session_state.last_uploaded_files_count = 0 # Reset file count tracker
-    # No explicit st.rerun() needed here, state change in callback triggers it
-
+    # Streamlit automatically reruns after a callback modifies session state
 
 # --- Page Title ---
 st.title("📄 ArabicPDF - PDF to Word Extractor")
@@ -81,28 +82,26 @@ st.header("📁 Upload PDFs")
 uploaded_files = st.file_uploader(
     "Choose PDF files", type="pdf", accept_multiple_files=True,
     label_visibility="collapsed",
-    key="pdf_uploader" # Assign key to allow clearing
+    key="pdf_uploader" # Assign key to allow clearing via callback
 )
 
 # Detect if files have changed (via upload/removal in widget)
 current_file_count = len(uploaded_files) if uploaded_files else 0
-# Only reset if count changes *and* it wasn't caused by our "Remove All" button click
-# (The callback handles the reset in that specific case)
 if current_file_count != st.session_state.last_uploaded_files_count:
-    # Check if the change was due to the uploader widget itself, not our button
-    # A bit tricky to be certain, but typically a direct widget interaction causes this difference
+    # Only reset processing state if files changed via uploader, not our button
+    # This check might be slightly imperfect but aims to prevent double resets
     reset_processing_state()
     st.session_state.last_uploaded_files_count = current_file_count
-    st.rerun() # Rerun immediately to reflect the cleared state if user manually removed files
+    st.rerun() # Rerun immediately to reflect changes in file list / cleared state
 
 # --- Buttons Area ---
-col1, col2 = st.columns([3, 2])
+col1, col2 = st.columns([3, 2]) # Ratio for Process vs Download buttons
 
 with col1:
     process_button_clicked = st.button(
         "✨ Process PDFs, Create Word Files, then Merge",
         key="process_button", use_container_width=True,
-        disabled=st.session_state.processing_started
+        disabled=st.session_state.processing_started or not uploaded_files # Also disable if no files
     )
 
 with col2:
@@ -117,21 +116,23 @@ with col2:
             use_container_width=True
         )
 
-# --- MOVED: UI Elements for Progress (Defined BEFORE file list) ---
-# Placeholders are defined here so they appear above the file list table during processing
+
+# --- CORRECTED POSITION: UI Elements for Progress ---
+# Define placeholders immediately below the button row, before the file list
 progress_bar_placeholder = st.empty()
 status_text_placeholder = st.empty()
-# --- END MOVED SECTION ---
+# --- END CORRECTED POSITION ---
 
 # --- Display Uploaded Files List ---
+# This section only appears if files have been uploaded
 if uploaded_files:
-    st.markdown("---") # Separator
+    st.markdown("---") # Separator line before the list
     # Use columns to place header and remove button side-by-side
-    col_header, col_button = st.columns([4, 1]) # Adjust ratio as needed
+    col_header, col_button = st.columns([0.8, 0.2]) # Adjust ratio: Header gets more space
     with col_header:
         st.subheader(f"Uploaded Files ({len(uploaded_files)}):")
     with col_button:
-        # NEW: Remove All button - appears only if files are uploaded
+        # CORRECTED: Ensure button is rendered here when uploaded_files is True
         st.button("🗑️ Remove All",
                   key="remove_all_button",
                   on_click=clear_uploads_callback, # Use callback to clear state
@@ -144,16 +145,17 @@ if uploaded_files:
 
 
 # --- Container for Individual File Results (Displayed below file list) ---
+# Defining this here ensures results appear after the table
 results_container = st.container()
 
 # --- Processing Logic ---
 if process_button_clicked:
     # logger.info("Process button clicked.")
-    # Reset state only when processing STARTS (already handled by button callback for remove all)
+    # Reset state again just to be safe when processing starts
     reset_processing_state()
     st.session_state.processing_started = True
 
-    # Checks before starting loop
+    # Re-check conditions (though button should be disabled if no files/API key)
     if not uploaded_files:
         st.warning("⚠️ Please upload PDF files first.")
         st.session_state.processing_started = False
@@ -166,25 +168,24 @@ if process_button_clicked:
     # Proceed only if checks passed and processing started
     if uploaded_files and api_key and st.session_state.processing_started:
         # logger.info(f"Starting processing loop for {len(uploaded_files)} files.")
-        # General start message CAN go here, but per-file status is more prominent now
-        # status_text_placeholder.info(f"Processing {len(uploaded_files)} PDF file(s)...")
 
         # List to collect individual Word doc streams for merging
         processed_doc_streams = [] # Stores tuples of (filename, stream)
 
         total_files = len(uploaded_files)
-        # Show progress bar instance - populates the placeholder defined earlier
+        # Show progress bar instance - populates the placeholder defined ABOVE file list
         progress_bar = progress_bar_placeholder.progress(0, text="Starting processing...")
 
         for i, uploaded_file in enumerate(uploaded_files):
             original_filename = uploaded_file.name
             current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
             progress_text = f"Processing {current_file_status}..."
-            # Update progress bar and status text (placeholders defined above file list)
+            # Update progress bar and status text (placeholders defined ABOVE file list)
             progress_bar.progress(i / total_files, text=progress_text)
             status_text_placeholder.info(f"🔄 Starting {current_file_status}") # Updates placeholder
 
             # --- Results Container for THIS file (appears below file list) ---
+            # Use the dedicated container for per-file messages
             with results_container:
                 st.markdown(f"--- \n**Processing: {original_filename}**")
 
@@ -196,7 +197,7 @@ if process_button_clicked:
             word_creation_error_occurred = False
 
             # 1. Extract Text
-            # Update status text IN PLACE (placeholder defined above file list)
+            # Update status text IN PLACE (placeholder ABOVE file list)
             status_text_placeholder.info(f"📄 Extracting text from {current_file_status}...")
             try:
                  file_clone_for_extraction = BytesIO(uploaded_file.getvalue())
@@ -240,8 +241,8 @@ if process_button_clicked:
                           processed_doc_streams.append((original_filename, word_doc_stream))
                           with results_container:
                                success_msg = f"✅ Created intermediate Word file for '{original_filename}'."
-                               if not processed_text and not gemini_error_occurred:
-                                   success_msg += " (Note: source text was empty/Gemini failed)"
+                               if not processed_text and (extraction_error or gemini_error_occurred): # Clarify if placeholder due to upstream issue
+                                   success_msg += " (Note: placeholder due to earlier error/empty text)"
                                st.success(success_msg)
                      else:
                           word_creation_error_occurred = True
@@ -252,7 +253,7 @@ if process_button_clicked:
                       with results_container:
                           st.error(f"❌ Error during intermediate Word file creation for '{original_filename}': {doc_exc}")
 
-            # Update progress bar (placeholder defined above file list)
+            # Update progress bar (placeholder ABOVE file list)
             status_msg_suffix = ""
             if extraction_error or word_creation_error_occurred:
                  status_msg_suffix = " Error."
@@ -260,16 +261,16 @@ if process_button_clicked:
 
         # --- End of file loop ---
 
-        # Clear progress bar and transient status text (placeholders defined above file list)
+        # Clear progress bar and transient status text (placeholders ABOVE file list)
         progress_bar_placeholder.empty()
         status_text_placeholder.empty()
 
-        # 4. Merge Documents and Update State (Results shown IN results_container)
+        # 4. Merge Documents and Update State (Results shown IN results_container below file list)
         final_status_message = ""
         rerun_needed = False
         successfully_created_doc_count = len(processed_doc_streams)
 
-        # Use the existing results_container for final merge status messages
+        # Use the dedicated results_container for final merge status messages
         with results_container:
             st.markdown("---") # Separator before final status
             if successfully_created_doc_count > 0:
@@ -299,7 +300,7 @@ if process_button_clicked:
             else: # No individual documents were successfully created to merge
                  final_status_message = "⚠️ No intermediate Word documents were successfully created to merge."
                  st.warning(final_status_message) # Show final warning in results container
-                 if uploaded_files:
+                 if uploaded_files: # Only add this if files were actually uploaded initially
                       st.info("Please check the individual file statuses above for errors.")
                  # logger.warning(final_status_message)
 
