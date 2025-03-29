@@ -4,3 +4,4 @@ PyMuPDF
 python-docx
 google-cloud-vision
 pandas
+docxcompose
