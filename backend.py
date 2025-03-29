@@ -7,6 +7,7 @@ from docx import Document
 import logging
 import os  # Required for environment variables
 import streamlit as st # Required for accessing secrets
+import json # Required for manual JSON parsing test
 
 # Import the Google Cloud Vision client library
 from google.cloud import vision
@@ -22,74 +23,72 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 CREDENTIALS_FILENAME = "google_credentials.json"
 _credentials_configured = False # Flag to track if setup was attempted
 
-# Check if the secret key exists in Streamlit secrets
-# This indicates we're likely running in an environment where secrets are provided (like Streamlit Cloud)
 if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
     logging.info("Found GOOGLE_CREDENTIALS_JSON in Streamlit Secrets. Setting up credentials file.")
-    # --- START: Modified try...except block with debugging ---
     try:
-        credentials_json_content = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-        logging.info(f"Read {len(credentials_json_content)} characters from secret.")
+        # 1. Read from secrets and log its representation
+        credentials_json_content_from_secrets = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+        logging.info(f"Read {len(credentials_json_content_from_secrets)} characters from secret.")
+        # Log first 500 chars using repr() to see hidden characters like \n explicitly
+        logging.info(f"REPR of secret content (first 500 chars):\n>>>\n{repr(credentials_json_content_from_secrets[:500])}\n<<<")
 
-        # --- START DEBUG LOGGING ---
-        # Log the specific line and character if possible
-        try:
-            lines = credentials_json_content.splitlines()
-            if len(lines) >= 5:
-                line_5 = lines[4] # Line 5 is index 4
-                logging.info(f"Secret content LINE 5 ({len(line_5)} chars):\n>>>\n{line_5}\n<<<")
-                if len(line_5) >= 46:
-                    # Log char 46 (index 45) and surrounding chars
-                    start_idx = max(0, 45 - 15) # Show more context
-                    end_idx = min(len(line_5), 45 + 16)
-                    snippet = line_5[start_idx:end_idx]
-                    char_at_46 = line_5[45] # Column 46 is index 45
-                    # Try to get the ASCII/Unicode code point
-                    try:
-                        char_code = ord(char_at_46)
-                    except TypeError:
-                        char_code = "N/A (Multi-byte?)"
-                    logging.info(f"Suspect character at line 5, col 46 (index 45): '{char_at_46}' (Code point: {char_code})")
-                    logging.info(f"Surrounding snippet (indices {start_idx}-{end_idx-1}):\n>>>\n{snippet}\n<<<")
-                else:
-                    logging.warning(f"Line 5 is too short (len {len(line_5)}) to have column 46.")
-            else:
-                 logging.warning("Secret content has less than 5 lines.")
-        except Exception as analyze_err:
-            logging.error(f"Error trying to split/analyze secret content lines for debugging: {analyze_err}")
-        # --- END DEBUG LOGGING ---
-
-        if not credentials_json_content.strip():
+        if not credentials_json_content_from_secrets.strip():
              logging.error("GOOGLE_CREDENTIALS_JSON secret is empty.")
-             _credentials_configured = False # Ensure flag is false if empty
+             _credentials_configured = False
         else:
-            # Explicitly write with UTF-8 encoding
+            # 2. Write the file
+            file_written_successfully = False
             try:
                 with open(CREDENTIALS_FILENAME, "w", encoding='utf-8') as f:
-                    f.write(credentials_json_content)
+                    f.write(credentials_json_content_from_secrets)
                 logging.info(f"Successfully wrote credentials to {CREDENTIALS_FILENAME} using UTF-8 encoding.")
-
-                # Set the environment variable AFTER successful write
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_FILENAME
-                logging.info(f"GOOGLE_APPLICATION_CREDENTIALS set to point to: {CREDENTIALS_FILENAME}")
-                _credentials_configured = True # Mark configuration as successful ONLY here
-
+                file_written_successfully = True
             except Exception as write_err:
                  logging.error(f"CRITICAL Error during file writing: {write_err}", exc_info=True)
                  _credentials_configured = False # Ensure flag is false on write error
 
+            # 3. If written, read back immediately and verify/parse
+            if file_written_successfully:
+                credentials_content_read_back = None
+                try:
+                    with open(CREDENTIALS_FILENAME, "r", encoding='utf-8') as f:
+                        credentials_content_read_back = f.read()
+                    logging.info(f"Successfully read back {len(credentials_content_read_back)} characters from {CREDENTIALS_FILENAME}.")
+                    # Log first 500 chars of read-back content using repr()
+                    logging.info(f"REPR of read-back content (first 500 chars):\n>>>\n{repr(credentials_content_read_back[:500])}\n<<<")
+
+                    # 4. Try parsing the read-back content manually using standard json library
+                    try:
+                        json.loads(credentials_content_read_back)
+                        # If manual parsing works, the file content IS valid JSON.
+                        logging.info("Manual JSON parsing of read-back content SUCCEEDED.")
+                        # Set the environment variable and flag ONLY if parsing succeeds
+                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_FILENAME
+                        logging.info(f"GOOGLE_APPLICATION_CREDENTIALS set to point to: {CREDENTIALS_FILENAME}")
+                        _credentials_configured = True # Mark configuration as successful ONLY here
+                    except json.JSONDecodeError as parse_err:
+                        # If this fails, the file content IS invalid JSON.
+                        logging.error(f"Manual JSON parsing of read-back content FAILED: {parse_err}", exc_info=True)
+                        _credentials_configured = False # Parsing failed
+                    except Exception as manual_parse_generic_err:
+                        logging.error(f"Unexpected error during manual JSON parsing: {manual_parse_generic_err}", exc_info=True)
+                        _credentials_configured = False # Other error during manual parse
+
+                except Exception as read_err:
+                    logging.error(f"CRITICAL Error reading back credentials file {CREDENTIALS_FILENAME}: {read_err}", exc_info=True)
+                    _credentials_configured = False # Failed to read back
+
     except Exception as e:
-        # This catches errors reading from st.secrets or the debug logging itself
-        logging.error(f"CRITICAL Error reading secret or during debug logging: {e}", exc_info=True)
+        # This catches errors reading from st.secrets itself
+        logging.error(f"CRITICAL Error reading secret: {e}", exc_info=True)
         _credentials_configured = False # Ensure flag is false on general errors here
-    # --- END: Modified try...except block ---
 
 elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
     # If running locally or elsewhere where the env var is set directly
     logging.info("Using GOOGLE_APPLICATION_CREDENTIALS environment variable set externally.")
     # We assume it's configured correctly if the env var exists
     # Check if the path actually exists for better local debugging
-    if os.environ["GOOGLE_APPLICATION_CREDENTIALS"] and os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
         logging.info(f"External credentials file found at: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}")
         _credentials_configured = True
     else:
@@ -119,8 +118,9 @@ def extract_text_from_pdf(pdf_file_obj):
 
     # Check if credentials setup failed earlier
     if not _credentials_configured:
-        logging.error("Vision API credentials were not configured successfully during startup.")
-        return "Error: Vision API authentication failed (Credentials not configured)."
+        # This message will appear if the manual JSON parsing in the setup block failed
+        logging.error("Vision API credentials were not configured successfully during startup (likely due to JSON parsing failure of credentials file).")
+        return "Error: Vision API authentication failed (Credentials setup failed)."
 
     # Double-check the environment variable just before client initialization
     credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -198,6 +198,7 @@ def extract_text_from_pdf(pdf_file_obj):
 
     except Exception as e:
         # Log the specific error, including traceback
+        # This will catch the google.auth.exceptions.DefaultCredentialsError if the Google library *still* fails to parse
         logging.error(f"CRITICAL Error during Vision API interaction: {e}", exc_info=True)
         # Provide a user-friendly error message that includes the exception text
         return f"Error: Failed to process PDF with Vision API. Exception: {e}"
@@ -292,7 +293,7 @@ def create_word_document(processed_text: str):
 
         # Set paragraph alignment to right and direction to RTL for Arabic
         paragraph_format = paragraph.paragraph_format
-        # WD_ALIGN_PARAGRAPH.RIGHT is 2, not 3. Corrected.
+        # WD_ALIGN_PARAGRAPH.RIGHT is 2
         paragraph_format.alignment = 2
         paragraph_format.right_to_left = True
 
