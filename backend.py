@@ -216,10 +216,13 @@ def extract_text_from_pdf(pdf_file_obj):
 def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
     """
     Processes raw text using the Gemini API based on provided rules.
+    Uses the latest Gemini Flash model.
+
     Args:
         api_key (str): The Gemini API key.
         raw_text (str): The raw text extracted from the PDF.
         rules_prompt (str): User-defined rules/instructions for Gemini.
+
     Returns:
         str: The processed text from Gemini. Returns empty string "" if raw_text is empty.
              Returns an error string starting with "Error:" if a failure occurs.
@@ -234,7 +237,9 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 
     try:
         genai.configure(api_key=api_key)
-        model_name = "gemini-1.5-pro-latest"  # Changed to Gemini Pro 1.5
+        # --- Use the latest Flash model ---
+        model_name = "gemini-1.5-flash-latest"
+        # ---                             ---
         model = genai.GenerativeModel(model_name)
 
         full_prompt = f"""
