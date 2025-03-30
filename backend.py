@@ -234,7 +234,7 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 
     try:
         genai.configure(api_key=api_key)
-        model_name = "gemini-1.5-flash-latest" # Hardcoded model
+        model_name = "gemini-1.5-pro-latest"  # Changed to Gemini Pro 1.5
         model = genai.GenerativeModel(model_name)
 
         full_prompt = f"""
