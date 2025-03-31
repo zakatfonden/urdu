@@ -1,4 +1,4 @@
-# app.py (with Custom File Ordering)
+# app.py (with Duplicated Controls and Model Selection)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
@@ -23,38 +23,29 @@ default_state = {
     'files_processed_count': 0,
     'processing_complete': False,
     'processing_started': False,
-    'ordered_files': [],  # <-- NEW: List to hold UploadedFile objects in custom order
+    'ordered_files': [],  # List to hold UploadedFile objects in custom order
 }
 for key, value in default_state.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# --- Helper Functions for Modifying Order ---
-# Place these before they are called by buttons
-
+# --- Helper Functions (Unchanged) ---
 def reset_processing_state():
     """Resets state related to processing results and status."""
     st.session_state.merged_doc_buffer = None
     st.session_state.files_processed_count = 0
     st.session_state.processing_complete = False
     st.session_state.processing_started = False
-    # logger.info("Processing state reset.")
 
 def move_file(index, direction):
     """Moves the file at the given index up (direction=-1) or down (direction=1)."""
     files = st.session_state.ordered_files
-    if not (0 <= index < len(files)):
-        return # Index out of bounds
-
+    if not (0 <= index < len(files)): return
     new_index = index + direction
-    if not (0 <= new_index < len(files)):
-        return # Cannot move past ends
-
-    # Swap elements
+    if not (0 <= new_index < len(files)): return
     files[index], files[new_index] = files[new_index], files[index]
-    st.session_state.ordered_files = files # Update state
-    reset_processing_state() # Order changed, invalidate previous results
-    # No rerun needed, Streamlit handles rerun on state change from button click
+    st.session_state.ordered_files = files
+    reset_processing_state()
 
 def remove_file(index):
     """Removes the file at the given index."""
@@ -62,39 +53,31 @@ def remove_file(index):
     if 0 <= index < len(files):
         removed_file = files.pop(index)
         st.toast(f"Removed '{removed_file.name}'.")
-        st.session_state.ordered_files = files # Update state
-        reset_processing_state() # List changed, invalidate previous results
+        st.session_state.ordered_files = files
+        reset_processing_state()
     else:
         st.warning(f"Could not remove file at index {index} (already removed or invalid?).")
-    # No rerun needed
 
 def handle_uploads():
     """Adds newly uploaded files to the ordered list, avoiding duplicates by name."""
     if 'pdf_uploader' in st.session_state and st.session_state.pdf_uploader:
-        # Get filenames currently in our ordered list
         current_filenames = {f.name for f in st.session_state.ordered_files}
         new_files_added_count = 0
-        # Check each file currently in the uploader widget's state
         for uploaded_file in st.session_state.pdf_uploader:
             if uploaded_file.name not in current_filenames:
                 st.session_state.ordered_files.append(uploaded_file)
-                current_filenames.add(uploaded_file.name) # Add to set to track additions within this batch
+                current_filenames.add(uploaded_file.name)
                 new_files_added_count += 1
 
         if new_files_added_count > 0:
             st.toast(f"Added {new_files_added_count} new file(s) to the end of the list.")
-            reset_processing_state() # New files added, invalidate previous results
-            # Clear the uploader widget state *after* processing its contents
-            # Note: This might feel slightly unintuitive as the widget clears,
-            # but the files are now managed in st.session_state.ordered_files.
-            # Consider if you want the uploader to *retain* the files visually.
-            # If so, remove the line below, but be mindful of how users add *more* files.
-            # st.session_state.pdf_uploader = [] # Optional: Clear uploader widget state
+            reset_processing_state()
+            # Clear the uploader widget state after processing its contents
+            # st.session_state.pdf_uploader = [] # Optional: Uncomment if you want uploader to clear visually
 
 def clear_all_files_callback():
     """Clears the ordered file list and resets processing state."""
     st.session_state.ordered_files = []
-    # Also clear the file uploader widget state if needed
     if 'pdf_uploader' in st.session_state:
         st.session_state.pdf_uploader = []
     reset_processing_state()
@@ -105,18 +88,42 @@ def clear_all_files_callback():
 st.title("📄 ArabicPDF - PDF to Word Extractor")
 st.markdown("Upload Arabic PDF files, arrange their processing order, then merge and download.")
 
-# --- Sidebar for Configuration (remains the same) ---
+# --- Sidebar ---
 st.sidebar.header("⚙️ Configuration")
+
+# API Key Input
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 api_key = st.sidebar.text_input(
     "Enter your Google Gemini API Key", type="password",
     help="Required. Get your key from Google AI Studio.", value=api_key_from_secrets or ""
 )
+# API Key Status Messages
 if api_key_from_secrets and api_key == api_key_from_secrets: st.sidebar.success("API Key loaded from Secrets.", icon="✅")
 elif not api_key_from_secrets and not api_key: st.sidebar.warning("API Key not found or entered.", icon="🔑")
 elif api_key and not api_key_from_secrets: st.sidebar.info("Using manually entered API Key.", icon="⌨️")
 elif api_key and api_key_from_secrets and api_key != api_key_from_secrets: st.sidebar.info("Using manually entered API Key (overrides secret).", icon="⌨️")
 
+# --- NEW: Model Selection ---
+st.sidebar.markdown("---") # Separator
+st.sidebar.header("🧠 AI Model")
+# Map user-friendly names to model IDs
+model_options = {
+    "Gemini 1.5 Flash (Fastest, Cost-Effective)": "gemini-1.5-flash-latest",
+    "Gemini 1.5 Pro (Advanced, Slower, Higher Cost)": "gemini-1.5-pro-latest",
+}
+selected_model_display_name = st.sidebar.selectbox(
+    "Choose the Gemini model for processing:",
+    options=list(model_options.keys()), # Use display names as options
+    index=0, # Default to Flash
+    key="gemini_model_select",
+    help="Select the AI model. Pro is more capable but slower and costs more."
+)
+# Get the actual model ID based on the user's selection
+selected_model_id = model_options[selected_model_display_name]
+st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
+
+# Extraction Rules (Unchanged)
+st.sidebar.markdown("---") # Separator
 st.sidebar.header("📜 Extraction Rules")
 default_rules = """
 1. Correct any OCR errors or misinterpretations in the Arabic text.
@@ -136,98 +143,130 @@ rules_prompt = st.sidebar.text_area(
 
 st.header("📁 Manage Files for Processing")
 
-# --- File Uploader (triggers adding to the list) ---
-# Use 'on_change' to add files to our managed list in session state
+# File Uploader (Unchanged)
 uploaded_files_widget = st.file_uploader(
     "Choose PDF files to add to the list below:", type="pdf", accept_multiple_files=True,
-    key="pdf_uploader", # Assign key to access its state and potentially clear it
-    on_change=handle_uploads, # Callback adds new files to st.session_state.ordered_files
-    label_visibility="visible" # Make label visible
+    key="pdf_uploader",
+    on_change=handle_uploads,
+    label_visibility="visible"
 )
 
 st.markdown("---")
 
-# --- Interactive File List ---
-st.subheader(f"Files in Processing Order ({len(st.session_state.ordered_files)}):")
+# --- TOP: Buttons Area & Progress Indicators ---
+st.subheader("🚀 Actions & Progress (Top)")
+col_b1_top, col_b2_top = st.columns([3, 2])
 
-if not st.session_state.ordered_files:
-    st.info("Use the uploader above to add files. They will appear here for ordering.")
-else:
-    # Header row for the interactive list
-    col_h1, col_h2, col_h3, col_h4, col_h5 = st.columns([0.5, 5, 1, 1, 1]) # Adjust ratios as needed
-    with col_h1: st.markdown("**#**")
-    with col_h2: st.markdown("**Filename**")
-    with col_h3: st.markdown("**Up**")
-    with col_h4: st.markdown("**Down**")
-    with col_h5: st.markdown("**Remove**")
-
-    # Display each file with interactive buttons
-    for i, file in enumerate(st.session_state.ordered_files):
-        col1, col2, col3, col4, col5 = st.columns([0.5, 5, 1, 1, 1]) # Match header ratios
-        with col1:
-            st.write(f"{i+1}") # Display number
-        with col2:
-            st.write(file.name) # Display filename
-        with col3:
-            # Disable "Up" button for the first item
-            st.button("⬆️", key=f"up_{i}", on_click=move_file, args=(i, -1), disabled=(i == 0), help="Move Up")
-        with col4:
-            # Disable "Down" button for the last item
-            st.button("⬇️", key=f"down_{i}", on_click=move_file, args=(i, 1), disabled=(i == len(st.session_state.ordered_files) - 1), help="Move Down")
-        with col5:
-            # Use a unique key based on index for removal
-            st.button("❌", key=f"del_{i}", on_click=remove_file, args=(i,), help="Remove")
-
-    # Add a button to clear the entire list
-    st.button("🗑️ Remove All Files",
-              key="remove_all_button",
-              on_click=clear_all_files_callback, # Use specific callback
-              help="Click to remove all files from the list.",
-              type="secondary") # Make it less prominent than process
-
-
-st.markdown("---") # Separator before action buttons
-
-
-# --- Buttons Area ---
-col_b1, col_b2 = st.columns([3, 2]) # Ratio for Process vs Download buttons
-
-with col_b1:
-    process_button_clicked = st.button(
-        "✨ Process Files in Current Order & Merge",
-        key="process_button", use_container_width=True, type="primary",
-        disabled=st.session_state.processing_started or not st.session_state.ordered_files # Disable if processing or no files in list
+with col_b1_top:
+    process_button_top_clicked = st.button(
+        "✨ Process Files & Merge (Top)",
+        key="process_button_top", # Unique key
+        use_container_width=True, type="primary",
+        disabled=st.session_state.processing_started or not st.session_state.ordered_files
     )
 
-with col_b2:
-    # Download button visibility depends on merged_doc_buffer existence AND processing not running
+with col_b2_top:
+    # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
         st.download_button(
             label=f"📥 Download Merged ({st.session_state.files_processed_count}) Files (.docx)",
             data=st.session_state.merged_doc_buffer,
             file_name="merged_arabic_documents.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_merged_button",
+            key="download_merged_button_top", # Unique key
             use_container_width=True
         )
+    elif st.session_state.processing_started:
+         st.info("Processing in progress...", icon="⏳")
+    else:
+        # Placeholder or message when download isn't ready
+        st.markdown("*(Download button appears here after processing)*")
 
 
-# --- UI Elements for Progress ---
-progress_bar_placeholder = st.empty()
-status_text_placeholder = st.empty()
+# Placeholders for top progress indicators
+progress_bar_placeholder_top = st.empty()
+status_text_placeholder_top = st.empty()
 
-# --- Container for Individual File Results (Displayed below progress) ---
+st.markdown("---") # Separator before file list
+
+# --- Interactive File List (Unchanged) ---
+st.subheader(f"Files in Processing Order ({len(st.session_state.ordered_files)}):")
+
+if not st.session_state.ordered_files:
+    st.info("Use the uploader above to add files. They will appear here for ordering.")
+else:
+    # Header row
+    col_h1, col_h2, col_h3, col_h4, col_h5 = st.columns([0.5, 5, 1, 1, 1])
+    with col_h1: st.markdown("**#**")
+    with col_h2: st.markdown("**Filename**")
+    with col_h3: st.markdown("**Up**")
+    with col_h4: st.markdown("**Down**")
+    with col_h5: st.markdown("**Remove**")
+
+    # File rows
+    for i, file in enumerate(st.session_state.ordered_files):
+        col1, col2, col3, col4, col5 = st.columns([0.5, 5, 1, 1, 1])
+        with col1: st.write(f"{i+1}")
+        with col2: st.write(file.name)
+        with col3: st.button("⬆️", key=f"up_{i}", on_click=move_file, args=(i, -1), disabled=(i == 0), help="Move Up")
+        with col4: st.button("⬇️", key=f"down_{i}", on_click=move_file, args=(i, 1), disabled=(i == len(st.session_state.ordered_files) - 1), help="Move Down")
+        with col5: st.button("❌", key=f"del_{i}", on_click=remove_file, args=(i,), help="Remove")
+
+    # Clear all button
+    st.button("🗑️ Remove All Files",
+              key="remove_all_button",
+              on_click=clear_all_files_callback,
+              help="Click to remove all files from the list.",
+              type="secondary")
+
+
+st.markdown("---") # Separator after file list
+
+# --- BOTTOM: Buttons Area & Progress Indicators ---
+st.subheader("🚀 Actions & Progress (Bottom)")
+col_b1_bottom, col_b2_bottom = st.columns([3, 2])
+
+with col_b1_bottom:
+    process_button_bottom_clicked = st.button(
+        "✨ Process Files & Merge (Bottom)",
+        key="process_button_bottom", # Unique key
+        use_container_width=True, type="primary",
+        disabled=st.session_state.processing_started or not st.session_state.ordered_files
+    )
+
+with col_b2_bottom:
+    # Show download button if buffer exists and not processing
+    if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
+        st.download_button(
+            label=f"📥 Download Merged ({st.session_state.files_processed_count}) Files (.docx)",
+            data=st.session_state.merged_doc_buffer,
+            file_name="merged_arabic_documents.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="download_merged_button_bottom", # Unique key
+            use_container_width=True
+        )
+    elif st.session_state.processing_started:
+        st.info("Processing in progress...", icon="⏳")
+    else:
+        # Placeholder or message when download isn't ready
+        st.markdown("*(Download button appears here after processing)*")
+
+# Placeholders for bottom progress indicators
+progress_bar_placeholder_bottom = st.empty()
+status_text_placeholder_bottom = st.empty()
+
+# --- Container for Individual File Results (Displayed below bottom progress) ---
 results_container = st.container()
 
 
-# --- Processing Logic (Iterates over st.session_state.ordered_files) ---
-if process_button_clicked:
-    # Reset state again just to be safe when processing starts
+# --- Processing Logic ---
+# Check if EITHER process button was clicked
+if process_button_top_clicked or process_button_bottom_clicked:
     reset_processing_state()
     st.session_state.processing_started = True
 
-    # Re-check conditions (API key, rules)
-    if not st.session_state.ordered_files: # Check our ordered list now
+    # Re-check conditions
+    if not st.session_state.ordered_files:
         st.warning("⚠️ No files in the list to process.")
         st.session_state.processing_started = False
     elif not api_key:
@@ -235,23 +274,32 @@ if process_button_clicked:
         st.session_state.processing_started = False
     elif not rules_prompt:
         st.warning("⚠️ The 'Extraction Rules' field is empty. Processing without specific instructions.")
+    # --- NEW: Check selected model ---
+    elif not selected_model_id:
+         st.error("❌ No Gemini model selected in the sidebar.") # Should not happen with default
+         st.session_state.processing_started = False
 
-    # Proceed only if checks passed and processing started
-    if st.session_state.ordered_files and api_key and st.session_state.processing_started:
+    # Proceed only if checks passed
+    if st.session_state.ordered_files and api_key and st.session_state.processing_started and selected_model_id:
 
-        # List to collect individual Word doc streams for merging (in order)
-        processed_doc_streams = [] # Stores tuples of (filename, stream)
-
+        processed_doc_streams = []
         total_files = len(st.session_state.ordered_files)
-        progress_bar = progress_bar_placeholder.progress(0, text="Starting processing...")
 
-        # --- Iterate through the ORDERED list from session state ---
+        # Initialize BOTH progress bars
+        progress_bar_top = progress_bar_placeholder_top.progress(0, text="Starting processing...")
+        progress_bar_bottom = progress_bar_placeholder_bottom.progress(0, text="Starting processing...")
+
         for i, file_to_process in enumerate(st.session_state.ordered_files):
             original_filename = file_to_process.name
             current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
             progress_text = f"Processing {current_file_status}..."
-            progress_bar.progress(i / total_files, text=progress_text)
-            status_text_placeholder.info(f"🔄 Starting {current_file_status}")
+
+            # Update BOTH progress bars and status texts
+            progress_value = i / total_files
+            progress_bar_top.progress(progress_value, text=progress_text)
+            progress_bar_bottom.progress(progress_value, text=progress_text)
+            status_text_placeholder_top.info(f"🔄 Starting {current_file_status}")
+            status_text_placeholder_bottom.info(f"🔄 Starting {current_file_status}")
 
             with results_container:
                 st.markdown(f"--- \n**Processing: {original_filename}**")
@@ -263,12 +311,12 @@ if process_button_clicked:
             word_creation_error_occurred = False
 
             # 1. Extract Text
-            status_text_placeholder.info(f"📄 Extracting text from {current_file_status}...")
+            # Update BOTH status texts
+            status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
+            status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
             try:
-                 # --- Pass file object directly, ensure pointer is at start ---
                  file_to_process.seek(0)
                  raw_text = backend.extract_text_from_pdf(file_to_process)
-                 # --- Backend error handling remains the same ---
                  if raw_text is None:
                      with results_container: st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
                      extraction_error = True
@@ -277,68 +325,72 @@ if process_button_clicked:
                      extraction_error = True
                  elif not raw_text or not raw_text.strip():
                      with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. An empty section will be added.")
-                     processed_text = "" # Ensure it's empty for doc creation
+                     processed_text = ""
             except Exception as ext_exc:
                  with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
                  extraction_error = True
 
-            # 2. Process with Gemini (only if text extracted successfully)
+            # 2. Process with Gemini
             if not extraction_error and raw_text and raw_text.strip():
-                 status_text_placeholder.info(f"🤖 Sending text from {current_file_status} to Gemini...")
+                 # Update BOTH status texts
+                 status_text_placeholder_top.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
+                 status_text_placeholder_bottom.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
                  try:
-                     processed_text_result = backend.process_text_with_gemini(api_key, raw_text, rules_prompt)
+                     # --- Pass selected_model_id to backend ---
+                     processed_text_result = backend.process_text_with_gemini(
+                         api_key, raw_text, rules_prompt, selected_model_id
+                     )
+                     # ---                                      ---
                      if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
                          with results_container: st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
                          gemini_error_occurred = True
-                         processed_text = "" # Use empty if Gemini fails
+                         processed_text = ""
                      else:
                          processed_text = processed_text_result
                  except Exception as gem_exc:
                       with results_container: st.error(f"❌ Unexpected error during Gemini processing for '{original_filename}': {gem_exc}")
                       gemini_error_occurred = True
-                      processed_text = "" # Use empty on unexpected error
+                      processed_text = ""
 
-            # 3. Create Individual Word Document (always attempt unless critical extraction error)
+            # 3. Create Individual Word Document
             word_doc_stream = None
-            if not extraction_error: # Only skip if extraction failed completely
-                 status_text_placeholder.info(f"📝 Creating intermediate Word document for {current_file_status}...")
+            if not extraction_error:
+                 # Update BOTH status texts
+                 status_text_placeholder_top.info(f"📝 Creating intermediate Word document for {current_file_status}...")
+                 status_text_placeholder_bottom.info(f"📝 Creating intermediate Word document for {current_file_status}...")
                  try:
-                     # processed_text will be "" if extraction yielded nothing or Gemini failed
                      word_doc_stream = backend.create_word_document(processed_text)
                      if word_doc_stream:
-                          # Append the stream *along with the original filename* for potential use in merging logic
                           processed_doc_streams.append((original_filename, word_doc_stream))
                           with results_container:
                                success_msg = f"✅ Created intermediate Word file for '{original_filename}'."
-                               # Add note if content is empty/placeholder
                                if not processed_text or not processed_text.strip():
-                                   if gemini_error_occurred:
-                                       success_msg += " (Note: placeholder text used due to Gemini error)"
-                                   elif raw_text is None or not raw_text.strip():
-                                        success_msg += " (Note: placeholder text used as no text was extracted)"
-                                   else: # Case where Gemini might have returned empty string legitimately
-                                       success_msg += " (Note: content appears empty)"
-
+                                   if gemini_error_occurred: success_msg += " (Note: placeholder text used due to Gemini error)"
+                                   elif raw_text is None or not raw_text.strip(): success_msg += " (Note: placeholder text used as no text was extracted)"
+                                   else: success_msg += " (Note: content appears empty)"
                                st.success(success_msg)
                      else:
                           word_creation_error_occurred = True
                           with results_container: st.error(f"❌ Failed to create intermediate Word file for '{original_filename}' (backend returned None).")
-
                  except Exception as doc_exc:
                       word_creation_error_occurred = True
                       with results_container: st.error(f"❌ Error during intermediate Word file creation for '{original_filename}': {doc_exc}")
 
-            # Update overall progress
+            # Update overall progress on BOTH bars
             status_msg_suffix = ""
-            if extraction_error or word_creation_error_occurred or gemini_error_occurred:
-                 status_msg_suffix = " with issues." # More generic than "Error."
-            progress_bar.progress((i + 1) / total_files, text=f"Processed {current_file_status}{status_msg_suffix}")
+            if extraction_error or word_creation_error_occurred or gemini_error_occurred: status_msg_suffix = " with issues."
+            final_progress_value = (i + 1) / total_files
+            final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
+            progress_bar_top.progress(final_progress_value, text=final_progress_text)
+            progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
 
         # --- End of file loop ---
 
-        # Clear progress bar and transient status text
-        progress_bar_placeholder.empty()
-        status_text_placeholder.empty()
+        # Clear BOTH progress bars and status texts
+        progress_bar_placeholder_top.empty()
+        status_text_placeholder_top.empty()
+        progress_bar_placeholder_bottom.empty()
+        status_text_placeholder_bottom.empty()
 
         # 4. Merge Documents and Update State
         final_status_message = ""
@@ -350,47 +402,42 @@ if process_button_clicked:
             if successfully_created_doc_count > 0:
                 st.info(f"💾 Merging {successfully_created_doc_count} intermediate Word document(s)... Please wait.")
                 try:
-                    # Pass the list of (filename, stream) tuples
                     merged_doc_buffer = backend.merge_word_documents(processed_doc_streams)
 
                     if merged_doc_buffer:
                         st.session_state.merged_doc_buffer = merged_doc_buffer
                         st.session_state.files_processed_count = successfully_created_doc_count
-                        final_status_message = f"✅ Processing complete! Merged document created from {successfully_created_doc_count} source file(s). Click 'Download Merged' above."
+                        final_status_message = f"✅ Processing complete! Merged document created from {successfully_created_doc_count} source file(s). Click 'Download Merged' above or below."
                         st.success(final_status_message)
-                        rerun_needed = True # To show download button
+                        rerun_needed = True # Rerun to show download buttons
                     else:
                         final_status_message = "❌ Failed to merge Word documents (backend returned None)."
                         st.error(final_status_message)
-
                 except Exception as merge_exc:
                     final_status_message = f"❌ Error during document merging: {merge_exc}"
                     logging.error(f"Error during merge_word_documents call: {merge_exc}", exc_info=True)
                     st.error(final_status_message)
-
-            else: # No individual documents were successfully created to merge
+            else:
                  final_status_message = "⚠️ No intermediate Word documents were successfully created to merge."
                  st.warning(final_status_message)
-                 if st.session_state.ordered_files: # Check if there were files initially
-                      st.info("Please check the individual file statuses above for errors.")
+                 if st.session_state.ordered_files: st.info("Please check the individual file statuses above for errors.")
 
-        # Update final state variables
         st.session_state.processing_complete = True
         st.session_state.processing_started = False
 
         if rerun_needed:
-            st.rerun() # Rerun to make download button visible / update UI state
+            st.rerun() # Rerun to make download buttons visible / update UI state
 
     else:
-        # Case where processing didn't start due to initial checks failing
-        if not st.session_state.ordered_files or not api_key:
+        # Processing didn't start due to initial checks failing
+        if not st.session_state.ordered_files or not api_key or not selected_model_id:
              st.session_state.processing_started = False # Ensure it's reset
 
 
-# --- Fallback info message ---
+# --- Fallback info message (Unchanged) ---
 if not st.session_state.ordered_files and not st.session_state.processing_started and not st.session_state.processing_complete:
     st.info("Upload PDF files using the 'Choose PDF files' button above.")
 
-# --- Footer ---
+# --- Footer (Unchanged) ---
 st.markdown("---")
 st.markdown("Developed with Streamlit and Google Gemini.")
