@@ -1,4 +1,4 @@
-# backend.py
+# backend.py (with Model Selection Parameter)
 
 import io
 import google.generativeai as genai
@@ -17,12 +17,10 @@ from google.cloud import vision
 from docxcompose.composer import Composer
 
 # --- Configure Logging ---
-# Basic configuration, adjust level and format as needed
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
 
-# --- START: Runtime Credentials Setup for Streamlit Cloud ---
-# This block should run once when the module is loaded.
-
+# --- START: Runtime Credentials Setup for Streamlit Cloud (Unchanged) ---
+# (Keep the existing credentials setup block exactly as it was)
 # Define the path for the temporary credentials file within the container's filesystem
 CREDENTIALS_FILENAME = "google_credentials.json"
 _credentials_configured = False # Flag to track if setup was attempted
@@ -116,11 +114,10 @@ elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
 else:
     logging.warning("Vision API Credentials NOT found: Neither GOOGLE_CREDENTIALS_JSON secret nor GOOGLE_APPLICATION_CREDENTIALS env var is set.")
     _credentials_configured = False
-
 # --- END: Runtime Credentials Setup ---
 
 
-# --- PDF/Image Processing with Google Cloud Vision ---
+# --- PDF/Image Processing with Google Cloud Vision (Unchanged) ---
 def extract_text_from_pdf(pdf_file_obj):
     """
     Extracts text from a PDF file object using Google Cloud Vision API OCR.
@@ -212,16 +209,17 @@ def extract_text_from_pdf(pdf_file_obj):
         return f"Error: Failed to process PDF with Vision API. Exception: {e}"
 
 
-# --- Gemini Processing ---
-def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
+# --- Gemini Processing (MODIFIED) ---
+# --- ADD model_name parameter ---
+def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, model_name: str):
     """
-    Processes raw text using the Gemini API based on provided rules.
-    Uses the latest Gemini Flash model.
+    Processes raw text using the specified Gemini API model based on provided rules.
 
     Args:
         api_key (str): The Gemini API key.
         raw_text (str): The raw text extracted from the PDF.
         rules_prompt (str): User-defined rules/instructions for Gemini.
+        model_name (str): The specific Gemini model ID to use (e.g., "gemini-1.5-flash-latest").
 
     Returns:
         str: The processed text from Gemini. Returns empty string "" if raw_text is empty.
@@ -235,12 +233,18 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
         logging.warning("Skipping Gemini call: No raw text provided.")
         return ""
 
+    # --- NEW: Check if model_name is provided ---
+    if not model_name:
+        logging.error("Gemini model name is missing.")
+        return "Error: Gemini model name not specified."
+    # ---
+
     try:
         genai.configure(api_key=api_key)
-        # --- Use the latest Flash model ---
-        model_name = "gemini-1.5-flash-latest"
-        # ---                             ---
+        # --- Use the PASSED model name ---
+        logging.info(f"Initializing Gemini model: {model_name}")
         model = genai.GenerativeModel(model_name)
+        # ---                               ---
 
         full_prompt = f"""
         **Instructions:**
@@ -255,9 +259,12 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
         Return ONLY the processed text according to the instructions. Do not add any introductory phrases like "Here is the processed text:". Ensure proper Arabic formatting and right-to-left presentation.
         """
 
+        # --- Update logging to include the model name ---
         logging.info(f"Sending request to Gemini model: {model_name}. Text length: {len(raw_text)}")
+        # ---
         response = model.generate_content(full_prompt)
 
+        # Error handling for response remains the same
         if not response.parts:
             block_reason = None
             safety_ratings = None
@@ -267,24 +274,24 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str):
 
             if block_reason:
                 block_reason_msg = f"Content blocked by Gemini safety filters. Reason: {block_reason}"
-                logging.error(f"Gemini request blocked. Reason: {block_reason}. Ratings: {safety_ratings}")
+                logging.error(f"Gemini request ({model_name}) blocked. Reason: {block_reason}. Ratings: {safety_ratings}")
                 return f"Error: {block_reason_msg}"
             else:
                 finish_reason_obj = getattr(response, 'prompt_feedback', None)
                 finish_reason = getattr(finish_reason_obj, 'finish_reason', 'UNKNOWN') if finish_reason_obj else 'UNKNOWN'
-                logging.warning(f"Gemini returned no parts (empty response). Finish Reason: {finish_reason}")
-                return "" # Return empty for non-safety empty response
+                logging.warning(f"Gemini ({model_name}) returned no parts (empty response). Finish Reason: {finish_reason}")
+                return ""
 
         processed_text = response.text
-        logging.info(f"Successfully received response from Gemini. Processed text length: {len(processed_text)}")
+        logging.info(f"Successfully received response from Gemini ({model_name}). Processed text length: {len(processed_text)}")
         return processed_text
 
     except Exception as e:
-        logging.error(f"Error interacting with Gemini API: {e}", exc_info=True)
-        return f"Error: Failed to process text with Gemini. Details: {e}"
+        logging.error(f"Error interacting with Gemini API ({model_name}): {e}", exc_info=True)
+        return f"Error: Failed to process text with Gemini ({model_name}). Details: {e}"
 
 
-# --- RE-IMPLEMENTED: Create SINGLE Word Document ---
+# --- Create SINGLE Word Document (Unchanged) ---
 def create_word_document(processed_text: str):
     """
     Creates a single Word document (.docx) in memory containing the processed text.
@@ -371,7 +378,7 @@ def create_word_document(processed_text: str):
         return None # Indicate failure to create the document stream
 
 
-# --- UPDATED Merging Function using docxcompose (No Headers/Page Breaks) ---
+# --- Merging Function using docxcompose (Unchanged) ---
 def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
     """
     Merges multiple Word documents (provided as BytesIO streams) into one single document
@@ -393,34 +400,19 @@ def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
         # --- Initialize Composer with the first document ---
         first_filename, first_stream = doc_streams_data[0]
         first_stream.seek(0)
-        # Load the first stream into a Document object
         master_doc = Document(first_stream)
         logging.info(f"Loaded base document from '{first_filename}'.")
-
-        # --- REMOVED: Code that added heading for the first file ---
-
-        # Create the Composer using the unmodified first document as the base
         composer = Composer(master_doc)
         logging.info(f"Initialized merger with base document.")
 
-
         # --- Append remaining documents ---
-        # Loop starts from the *second* document (index 1)
         for i in range(1, len(doc_streams_data)):
             filename, stream = doc_streams_data[i]
             stream.seek(0)
             logging.info(f"Merging content directly from '{filename}'...")
-
-            # Load the next document stream into a Document object
             sub_doc = Document(stream)
-
-            # --- REMOVED: Code that added page break and heading before appending ---
-
-            # --- Append the sub-document directly ---
-            # The append method handles merging content and styles
             composer.append(sub_doc)
             logging.info(f"Successfully appended content from '{filename}'.")
-
 
         # --- Save the final merged document ---
         merged_stream = io.BytesIO()
@@ -430,6 +422,5 @@ def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
         return merged_stream
 
     except Exception as e:
-        # Log the full traceback for debugging merging errors
         logging.error(f"Error merging Word documents using docxcompose: {e}", exc_info=True)
         return None
