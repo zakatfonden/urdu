@@ -1,6 +1,6 @@
 streamlit
 google-generativeai
-PyMuPDF
+PyPDF2
 python-docx
 google-cloud-vision
 pandas
