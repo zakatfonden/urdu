@@ -1,4 +1,4 @@
-# app.py (with Duplicated Controls and Model Selection)
+# app.py (with Duplicated Controls, Model Selection, and fix for pdf_uploader state error)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
@@ -29,7 +29,7 @@ for key, value in default_state.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions (Unchanged from previous version except clear_all_files_callback) ---
 def reset_processing_state():
     """Resets state related to processing results and status."""
     st.session_state.merged_doc_buffer = None
@@ -60,9 +60,11 @@ def remove_file(index):
 
 def handle_uploads():
     """Adds newly uploaded files to the ordered list, avoiding duplicates by name."""
+    # Check if the uploader widget exists in state and has files
     if 'pdf_uploader' in st.session_state and st.session_state.pdf_uploader:
         current_filenames = {f.name for f in st.session_state.ordered_files}
         new_files_added_count = 0
+        # Iterate through the files currently held by the uploader widget's state
         for uploaded_file in st.session_state.pdf_uploader:
             if uploaded_file.name not in current_filenames:
                 st.session_state.ordered_files.append(uploaded_file)
@@ -72,16 +74,24 @@ def handle_uploads():
         if new_files_added_count > 0:
             st.toast(f"Added {new_files_added_count} new file(s) to the end of the list.")
             reset_processing_state()
-            # Clear the uploader widget state after processing its contents
-            # st.session_state.pdf_uploader = [] # Optional: Uncomment if you want uploader to clear visually
+            # Optional: It's generally NOT recommended or possible to clear the
+            # uploader widget state programmatically like this after initial render.
+            # st.session_state.pdf_uploader = [] # This line would cause an error if uncommented after render
 
+# --- MODIFIED: Removed problematic line ---
 def clear_all_files_callback():
     """Clears the ordered file list and resets processing state."""
+    # Clear your application's managed list of files
     st.session_state.ordered_files = []
-    if 'pdf_uploader' in st.session_state:
-        st.session_state.pdf_uploader = []
+
+    # Reset processing state as before
     reset_processing_state()
     st.toast("Removed all files from the list.")
+
+    # DO NOT try to modify st.session_state.pdf_uploader here.
+    # The line `st.session_state.pdf_uploader = []` was removed as it causes
+    # a StreamlitValueAssignmentNotAllowedError. The uploader widget manages its own state.
+    # Our application logic correctly uses the cleared st.session_state.ordered_files.
 
 
 # --- Page Title ---
@@ -103,7 +113,7 @@ elif not api_key_from_secrets and not api_key: st.sidebar.warning("API Key not f
 elif api_key and not api_key_from_secrets: st.sidebar.info("Using manually entered API Key.", icon="⌨️")
 elif api_key and api_key_from_secrets and api_key != api_key_from_secrets: st.sidebar.info("Using manually entered API Key (overrides secret).", icon="⌨️")
 
-# --- NEW: Model Selection ---
+# --- Model Selection ---
 st.sidebar.markdown("---") # Separator
 st.sidebar.header("🧠 AI Model")
 # Map user-friendly names to model IDs
@@ -143,11 +153,11 @@ rules_prompt = st.sidebar.text_area(
 
 st.header("📁 Manage Files for Processing")
 
-# File Uploader (Unchanged)
+# File Uploader
 uploaded_files_widget = st.file_uploader(
     "Choose PDF files to add to the list below:", type="pdf", accept_multiple_files=True,
-    key="pdf_uploader",
-    on_change=handle_uploads,
+    key="pdf_uploader", # The key associated with the widget
+    on_change=handle_uploads, # Callback when files are uploaded/removed via the widget
     label_visibility="visible"
 )
 
@@ -189,7 +199,7 @@ status_text_placeholder_top = st.empty()
 
 st.markdown("---") # Separator before file list
 
-# --- Interactive File List (Unchanged) ---
+# --- Interactive File List ---
 st.subheader(f"Files in Processing Order ({len(st.session_state.ordered_files)}):")
 
 if not st.session_state.ordered_files:
@@ -215,7 +225,7 @@ else:
     # Clear all button
     st.button("🗑️ Remove All Files",
               key="remove_all_button",
-              on_click=clear_all_files_callback,
+              on_click=clear_all_files_callback, # Uses the corrected callback
               help="Click to remove all files from the list.",
               type="secondary")
 
@@ -274,7 +284,6 @@ if process_button_top_clicked or process_button_bottom_clicked:
         st.session_state.processing_started = False
     elif not rules_prompt:
         st.warning("⚠️ The 'Extraction Rules' field is empty. Processing without specific instructions.")
-    # --- NEW: Check selected model ---
     elif not selected_model_id:
          st.error("❌ No Gemini model selected in the sidebar.") # Should not happen with default
          st.session_state.processing_started = False
@@ -310,64 +319,86 @@ if process_button_top_clicked or process_button_bottom_clicked:
             gemini_error_occurred = False
             word_creation_error_occurred = False
 
-            # 1. Extract Text
+            # 1. Extract Text using backend (which now tries PyPDF2 first)
             # Update BOTH status texts
             status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
             status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
             try:
+                 # Ensure the file object is at the beginning before passing to backend
                  file_to_process.seek(0)
-                 raw_text = backend.extract_text_from_pdf(file_to_process)
-                 if raw_text is None:
-                     with results_container: st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
-                     extraction_error = True
-                 elif isinstance(raw_text, str) and raw_text.startswith("Error:"):
-                     with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
-                     extraction_error = True
-                 elif not raw_text or not raw_text.strip():
-                     with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. An empty section will be added.")
-                     processed_text = ""
-            except Exception as ext_exc:
-                 with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
-                 extraction_error = True
+                 # Backend function handles PyPDF2/Vision fallback internally
+                 raw_text_result = backend.extract_text_from_pdf(file_to_process)
 
-            # 2. Process with Gemini
-            if not extraction_error and raw_text and raw_text.strip():
+                 # Check if the result indicates an error from the backend
+                 if isinstance(raw_text_result, str) and raw_text_result.startswith("Error:"):
+                     with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text_result}")
+                     extraction_error = True
+                     raw_text = None # Ensure raw_text is None if extraction failed critically
+                 elif not raw_text_result or not raw_text_result.strip():
+                     with results_container: st.warning(f"⚠️ No text could be extracted from '{original_filename}' (tried PyPDF2 and/or Vision). An empty section will be added.")
+                     raw_text = "" # Set to empty string if nothing found
+                     processed_text = "" # Ensure processed text also starts empty
+                 else:
+                     raw_text = raw_text_result # Store successfully extracted text
+                     # Log extraction method if backend provides it (optional enhancement)
+                     # st.info(f"Extracted text using: {getattr(raw_text_result, 'method', 'Unknown')}")
+
+            except Exception as ext_exc:
+                 with results_container: st.error(f"❌ Unexpected error during text extraction call for '{original_filename}': {ext_exc}")
+                 extraction_error = True
+                 raw_text = None
+
+            # 2. Process with Gemini (only if text was extracted)
+            if not extraction_error and raw_text is not None and raw_text.strip():
                  # Update BOTH status texts
                  status_text_placeholder_top.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
                  status_text_placeholder_bottom.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
                  try:
-                     # --- Pass selected_model_id to backend ---
+                     # Pass selected_model_id to backend
                      processed_text_result = backend.process_text_with_gemini(
                          api_key, raw_text, rules_prompt, selected_model_id
                      )
-                     # ---                                      ---
-                     if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
-                         with results_container: st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
+                     # Check for errors from Gemini backend function
+                     if isinstance(processed_text_result, str) and processed_text_result.startswith("Error:"):
+                         with results_container: st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result}")
+                         gemini_error_occurred = True
+                         processed_text = "" # Use empty text if Gemini failed
+                     elif processed_text_result is None: # Handle potential None return, treat as error
+                         with results_container: st.error(f"❌ Gemini error for '{original_filename}': API call failed or returned None.")
                          gemini_error_occurred = True
                          processed_text = ""
                      else:
-                         processed_text = processed_text_result
+                         processed_text = processed_text_result # Store successfully processed text
+
                  except Exception as gem_exc:
-                      with results_container: st.error(f"❌ Unexpected error during Gemini processing for '{original_filename}': {gem_exc}")
+                      with results_container: st.error(f"❌ Unexpected error during Gemini processing call for '{original_filename}': {gem_exc}")
                       gemini_error_occurred = True
                       processed_text = ""
 
+            # If extraction resulted in empty text, skip Gemini but proceed to Word creation with empty content
+            elif not extraction_error and (raw_text is None or not raw_text.strip()):
+                processed_text = "" # Ensure processed_text is empty for the Word doc
+
             # 3. Create Individual Word Document
             word_doc_stream = None
+            # Proceed if extraction didn't have a critical *system* error (even if no text was found)
             if not extraction_error:
                  # Update BOTH status texts
                  status_text_placeholder_top.info(f"📝 Creating intermediate Word document for {current_file_status}...")
                  status_text_placeholder_bottom.info(f"📝 Creating intermediate Word document for {current_file_status}...")
                  try:
+                     # Pass the potentially empty 'processed_text'
                      word_doc_stream = backend.create_word_document(processed_text)
                      if word_doc_stream:
                           processed_doc_streams.append((original_filename, word_doc_stream))
                           with results_container:
                                success_msg = f"✅ Created intermediate Word file for '{original_filename}'."
+                               # Add notes based on why content might be empty/placeholder
                                if not processed_text or not processed_text.strip():
                                    if gemini_error_occurred: success_msg += " (Note: placeholder text used due to Gemini error)"
-                                   elif raw_text is None or not raw_text.strip(): success_msg += " (Note: placeholder text used as no text was extracted)"
-                                   else: success_msg += " (Note: content appears empty)"
+                                   elif raw_text is not None and not raw_text.strip(): success_msg += " (Note: placeholder text used as no text was extracted)"
+                                   # Case: extraction error already handled, processed_text is empty
+                                   elif extraction_error: pass # Error already shown for extraction
                                st.success(success_msg)
                      else:
                           word_creation_error_occurred = True
@@ -378,6 +409,7 @@ if process_button_top_clicked or process_button_bottom_clicked:
 
             # Update overall progress on BOTH bars
             status_msg_suffix = ""
+            # Check all potential error flags for the status suffix
             if extraction_error or word_creation_error_occurred or gemini_error_occurred: status_msg_suffix = " with issues."
             final_progress_value = (i + 1) / total_files
             final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
