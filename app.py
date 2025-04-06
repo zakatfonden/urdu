@@ -1,4 +1,4 @@
-# app.py (Modified for Urdu to Arabic Translation - Fix io NameError)
+# app.py (Modified for Urdu to Arabic - Stronger Footnote Removal)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
@@ -128,22 +128,23 @@ selected_model_display_name = st.sidebar.selectbox(
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
-# Extraction & Translation Rules (Unchanged from previous version)
+# --- UPDATED: Extraction & Translation Rules ---
 st.sidebar.markdown("---") # Separator
 st.sidebar.header("📜 Processing Rules")
 default_rules = """
 You are an expert multilingual processor specializing in Urdu, Arabic, Farsi, and English document conversion. Your task is to process the provided text extracted from a PDF page.
 
-1.  **Identify Main Content:** Carefully distinguish the main body text from any headers, footers, page numbers, or footnotes. Discard these peripheral elements.
-2.  **Clean Extracted Text:** Review the main content for potential OCR errors (common in Urdu/Farsi script). Correct obvious misinterpretations while preserving the original meaning and language (Urdu, Arabic, Farsi, or English).
+1.  **Isolate Main Content:** Your primary goal is to isolate the main body text. Identify and **completely delete** all headers (text at the top), footers (text at the bottom, including page numbers), and any footnotes or endnotes (text sections, often at the very bottom, linked by markers like numbers or symbols to the main text). These peripheral elements must be entirely excluded.
+2.  **Clean Extracted Text:** Review the main content (after removing peripheral elements) for potential OCR errors (common in Urdu/Farsi script). Correct obvious misinterpretations while preserving the original meaning and language (Urdu, Arabic, Farsi, or English).
 3.  **Translate to Arabic:** Accurately translate the *cleaned* main content into Modern Standard Arabic. Ensure the translation is natural and conveys the original intent.
 4.  **Format Output:** Structure the translated Arabic text into logical paragraphs based on the source. Ensure correct Arabic script presentation (RTL, character forms, ligatures).
-5.  **Output Only Translation:** Return ONLY the final, formatted Arabic translation. Do not include any explanations, apologies, or introductory phrases like "Here is the translation:".
+5.  **Output Only Translated Main Text:** Return ONLY the final, formatted Arabic translation of the main body text. **Crucially, ensure absolutely no headers, footers, page numbers, or footnote/endnote content appears in the output.** Do not include explanations or introductory phrases.
 """
 rules_prompt = st.sidebar.text_area(
-    "Enter the rules Gemini should follow:", value=default_rules, height=300,
+    "Enter the rules Gemini should follow:", value=default_rules, height=320, # Increased height slightly more
     help="Instructions for cleaning the extracted text (Urdu, etc.), removing headers/footers/footnotes, and translating to Arabic."
 )
+# --- END UPDATED RULES ---
 
 
 # --- Main Area ---
@@ -261,7 +262,7 @@ status_text_placeholder_bottom = st.empty()
 results_container = st.container()
 
 
-# --- Processing Logic ---
+# --- Processing Logic (Largely unchanged, relies on updated default_rules) ---
 # Check if EITHER process button was clicked
 if process_button_top_clicked or process_button_bottom_clicked:
     reset_processing_state()
@@ -274,7 +275,8 @@ if process_button_top_clicked or process_button_bottom_clicked:
     elif not api_key:
         st.error("❌ Please enter or configure your Gemini API Key in the sidebar.")
         st.session_state.processing_started = False
-    elif not rules_prompt:
+    # Use updated default_rules if prompt is empty
+    elif not rules_prompt.strip(): # Check if stripped prompt is empty
         st.warning("⚠️ The 'Processing Rules' field is empty. Processing with default translation/cleanup rules.")
         current_rules = default_rules
     elif not selected_model_id:
@@ -366,7 +368,7 @@ if process_button_top_clicked or process_button_bottom_clicked:
                     with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
                     extraction_error = True
 
-                # 2. Process with Gemini (Clean, Translate using new rules)
+                # 2. Process with Gemini (Clean, Translate using updated rules)
                 if not extraction_error:
                     if raw_text and raw_text.strip():
                         status_text_placeholder_top.info(f"🤖 Cleaning & Translating text from {current_file_status} via Gemini ({selected_model_display_name})...")
@@ -447,9 +449,8 @@ if process_button_top_clicked or process_button_bottom_clicked:
                 if files_successfully_appended > 0 or total_files > 0:
                     st.info(f"💾 Finalizing Word document with translations from {files_successfully_appended}/{total_files} file(s)...")
                     try:
-                        # --- FIX: Use BytesIO() directly ---
+                        # Use BytesIO() directly
                         final_doc_stream = BytesIO()
-                        # ---
                         master_document.save(final_doc_stream)
                         final_doc_stream.seek(0)
 
