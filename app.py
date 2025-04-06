@@ -1,4 +1,4 @@
-# app.py (Modified for Urdu to Arabic - Stronger Footnote Removal)
+# app.py (Modified for Urdu to Arabic - Aggressive Footnote Removal Prompt)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
@@ -128,23 +128,24 @@ selected_model_display_name = st.sidebar.selectbox(
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
-# --- UPDATED: Extraction & Translation Rules ---
+# --- == UPDATED: Aggressive Footnote Removal Rules == ---
 st.sidebar.markdown("---") # Separator
 st.sidebar.header("📜 Processing Rules")
 default_rules = """
-You are an expert multilingual processor specializing in Urdu, Arabic, Farsi, and English document conversion. Your task is to process the provided text extracted from a PDF page.
+You are an expert multilingual processor specializing in Urdu, Arabic, Farsi, and English document conversion. Your task is to process the provided text extracted from a PDF page, following these steps IN ORDER:
 
-1.  **Isolate Main Content:** Your primary goal is to isolate the main body text. Identify and **completely delete** all headers (text at the top), footers (text at the bottom, including page numbers), and any footnotes or endnotes (text sections, often at the very bottom, linked by markers like numbers or symbols to the main text). These peripheral elements must be entirely excluded.
-2.  **Clean Extracted Text:** Review the main content (after removing peripheral elements) for potential OCR errors (common in Urdu/Farsi script). Correct obvious misinterpretations while preserving the original meaning and language (Urdu, Arabic, Farsi, or English).
-3.  **Translate to Arabic:** Accurately translate the *cleaned* main content into Modern Standard Arabic. Ensure the translation is natural and conveys the original intent.
-4.  **Format Output:** Structure the translated Arabic text into logical paragraphs based on the source. Ensure correct Arabic script presentation (RTL, character forms, ligatures).
-5.  **Output Only Translated Main Text:** Return ONLY the final, formatted Arabic translation of the main body text. **Crucially, ensure absolutely no headers, footers, page numbers, or footnote/endnote content appears in the output.** Do not include explanations or introductory phrases.
+1.  **Identify and DELETE Footnotes/Endnotes FIRST:** Before any other cleaning, scan the entire extracted text. Locate any text sections that are clearly footnotes or endnotes. These are typically found at the very bottom of a page's content stream, often start with markers (like numbers ¹ ² ³ or symbols * † ‡) corresponding to markers in the main text, and may use a smaller font size (though you only see text). **Delete these footnote/endnote sections entirely and permanently from the text.**
+2.  **Isolate Main Content:** After removing footnotes/endnotes in Step 1, identify and **completely delete** all remaining headers (text at the top of the page content) and footers (text at the bottom, including page numbers).
+3.  **Clean Remaining Text:** Review the resulting main body text (which should now be free of footnotes, headers, and footers) for potential OCR errors (common in Urdu/Farsi script). Correct obvious misinterpretations while preserving the original meaning and language (Urdu, Arabic, Farsi, or English).
+4.  **Translate to Arabic:** Accurately translate the *cleaned main body text* from Step 3 into Modern Standard Arabic. Ensure the translation is natural and conveys the original intent.
+5.  **Format Output:** Structure the translated Arabic text into logical paragraphs based on the source. Ensure correct Arabic script presentation (RTL, character forms, ligatures).
+6.  **Output Only Translated Main Text:** Return ONLY the final, formatted Arabic translation from Step 5. **Crucially, double-check that absolutely no headers, footers, page numbers, or footnote/endnote content appears in the output.** Do not include explanations or introductory phrases.
 """
 rules_prompt = st.sidebar.text_area(
-    "Enter the rules Gemini should follow:", value=default_rules, height=320, # Increased height slightly more
+    "Enter the rules Gemini should follow:", value=default_rules, height=350, # Increased height further
     help="Instructions for cleaning the extracted text (Urdu, etc.), removing headers/footers/footnotes, and translating to Arabic."
 )
-# --- END UPDATED RULES ---
+# --- == END UPDATED RULES == ---
 
 
 # --- Main Area ---
