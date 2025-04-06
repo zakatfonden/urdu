@@ -1,12 +1,13 @@
-# app.py (Modified for Urdu to Arabic Translation)
+# app.py (Modified for Urdu to Arabic Translation - Fix io NameError)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
 import os
-from io import BytesIO
+# import io # No longer needed because we import BytesIO directly
+from io import BytesIO # Import BytesIO directly
 import logging
 
-# --- NEW: Import docx elements for direct manipulation ---
+# --- Import docx elements for direct manipulation ---
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -19,8 +20,8 @@ from docx.oxml import OxmlElement
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="UrduPDF", # CHANGED
-    page_icon="🇵🇰",      # Changed icon
+    page_title="UrduPDF",
+    page_icon="🇵🇰",
     layout="wide"
 )
 
@@ -92,8 +93,8 @@ def clear_all_files_callback():
 
 
 # --- Page Title ---
-st.title("🇵🇰 UrduPDF to Arabic - PDF to Word Extractor") # CHANGED
-st.markdown("Upload PDF files (primarily Urdu), arrange order, process (clean & translate to Arabic), and download as a single Word document.") # Modified description
+st.title("🇵🇰 UrduPDF to Arabic - PDF to Word Extractor")
+st.markdown("Upload PDF files (primarily Urdu), arrange order, process (clean & translate to Arabic), and download as a single Word document.")
 
 # --- Sidebar ---
 st.sidebar.header("⚙️ Configuration")
@@ -127,7 +128,7 @@ selected_model_display_name = st.sidebar.selectbox(
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
-# --- CHANGED: Extraction & Translation Rules ---
+# Extraction & Translation Rules (Unchanged from previous version)
 st.sidebar.markdown("---") # Separator
 st.sidebar.header("📜 Processing Rules")
 default_rules = """
@@ -140,8 +141,8 @@ You are an expert multilingual processor specializing in Urdu, Arabic, Farsi, an
 5.  **Output Only Translation:** Return ONLY the final, formatted Arabic translation. Do not include any explanations, apologies, or introductory phrases like "Here is the translation:".
 """
 rules_prompt = st.sidebar.text_area(
-    "Enter the rules Gemini should follow:", value=default_rules, height=300, # Increased height slightly
-    help="Instructions for cleaning the extracted text (Urdu, etc.), removing headers/footers/footnotes, and translating to Arabic." # Updated help text
+    "Enter the rules Gemini should follow:", value=default_rules, height=300,
+    help="Instructions for cleaning the extracted text (Urdu, etc.), removing headers/footers/footnotes, and translating to Arabic."
 )
 
 
@@ -175,9 +176,9 @@ with col_b2_top:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
         st.download_button(
-            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)", # Updated label
+            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)",
             data=st.session_state.merged_doc_buffer,
-            file_name="translated_urdu_to_arabic.docx", # Updated filename
+            file_name="translated_urdu_to_arabic.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             key="download_merged_button_top",
             use_container_width=True
@@ -240,9 +241,9 @@ with col_b2_bottom:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
         st.download_button(
-            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)", # Updated label
+            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)",
             data=st.session_state.merged_doc_buffer,
-            file_name="translated_urdu_to_arabic.docx", # Updated filename
+            file_name="translated_urdu_to_arabic.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             key="download_merged_button_bottom",
             use_container_width=True
@@ -260,7 +261,7 @@ status_text_placeholder_bottom = st.empty()
 results_container = st.container()
 
 
-# --- Processing Logic (Largely unchanged, relies on new rules_prompt) ---
+# --- Processing Logic ---
 # Check if EITHER process button was clicked
 if process_button_top_clicked or process_button_bottom_clicked:
     reset_processing_state()
@@ -274,16 +275,13 @@ if process_button_top_clicked or process_button_bottom_clicked:
         st.error("❌ Please enter or configure your Gemini API Key in the sidebar.")
         st.session_state.processing_started = False
     elif not rules_prompt:
-        # Now includes translation, so rules are more critical
         st.warning("⚠️ The 'Processing Rules' field is empty. Processing with default translation/cleanup rules.")
-        # Ensure default_rules is used if rules_prompt becomes empty somehow
-        current_rules = default_rules if not rules_prompt else rules_prompt
+        current_rules = default_rules
     elif not selected_model_id:
         st.error("❌ No Gemini model selected in the sidebar.")
         st.session_state.processing_started = False
     else:
-        # Use the text from the text_area if not empty
-        current_rules = rules_prompt
+        current_rules = rules_prompt # Use rules from text area
 
     # Proceed only if checks passed
     if st.session_state.ordered_files and api_key and st.session_state.processing_started and selected_model_id:
@@ -449,7 +447,9 @@ if process_button_top_clicked or process_button_bottom_clicked:
                 if files_successfully_appended > 0 or total_files > 0:
                     st.info(f"💾 Finalizing Word document with translations from {files_successfully_appended}/{total_files} file(s)...")
                     try:
-                        final_doc_stream = io.BytesIO()
+                        # --- FIX: Use BytesIO() directly ---
+                        final_doc_stream = BytesIO()
+                        # ---
                         master_document.save(final_doc_stream)
                         final_doc_stream.seek(0)
 
