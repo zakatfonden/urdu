@@ -1,11 +1,18 @@
-# app.py (with Duplicated Controls and Model Selection)
+# app.py (Modified for direct appending)
 
 import streamlit as st
 import backend  # Assumes backend.py is in the same directory
 import os
 from io import BytesIO
 import logging
-# import pandas as pd # No longer needed for displaying file list
+
+# --- NEW: Import docx elements for direct manipulation ---
+from docx import Document
+from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+# ---
 
 # Configure basic logging if needed
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,10 +27,10 @@ st.set_page_config(
 # --- Initialize Session State ---
 default_state = {
     'merged_doc_buffer': None,
-    'files_processed_count': 0,
+    'files_processed_count': 0, # Counts files successfully appended
     'processing_complete': False,
     'processing_started': False,
-    'ordered_files': [],  # List to hold UploadedFile objects in custom order
+    'ordered_files': [],
 }
 for key, value in default_state.items():
     if key not in st.session_state:
@@ -86,9 +93,9 @@ def clear_all_files_callback():
 
 # --- Page Title ---
 st.title("📄 ArabicPDF - PDF to Word Extractor")
-st.markdown("Upload Arabic PDF files, arrange their processing order, then merge and download.")
+st.markdown("Upload Arabic PDF files, arrange their processing order, then process and download as a single Word document.") # Modified description
 
-# --- Sidebar ---
+# --- Sidebar (Unchanged) ---
 st.sidebar.header("⚙️ Configuration")
 
 # API Key Input
@@ -103,22 +110,20 @@ elif not api_key_from_secrets and not api_key: st.sidebar.warning("API Key not f
 elif api_key and not api_key_from_secrets: st.sidebar.info("Using manually entered API Key.", icon="⌨️")
 elif api_key and api_key_from_secrets and api_key != api_key_from_secrets: st.sidebar.info("Using manually entered API Key (overrides secret).", icon="⌨️")
 
-# --- NEW: Model Selection ---
+# Model Selection (Unchanged)
 st.sidebar.markdown("---") # Separator
 st.sidebar.header("🧠 AI Model")
-# Map user-friendly names to model IDs
 model_options = {
     "Gemini 1.5 Flash (Fastest, Cost-Effective)": "gemini-1.5-flash-latest",
     "Gemini 1.5 Pro (Advanced, Slower, Higher Cost)": "gemini-1.5-pro-latest",
 }
 selected_model_display_name = st.sidebar.selectbox(
     "Choose the Gemini model for processing:",
-    options=list(model_options.keys()), # Use display names as options
-    index=0, # Default to Flash
+    options=list(model_options.keys()),
+    index=0,
     key="gemini_model_select",
     help="Select the AI model. Pro is more capable but slower and costs more."
 )
-# Get the actual model ID based on the user's selection
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
@@ -153,14 +158,14 @@ uploaded_files_widget = st.file_uploader(
 
 st.markdown("---")
 
-# --- TOP: Buttons Area & Progress Indicators ---
+# --- TOP: Buttons Area & Progress Indicators (Updated labels) ---
 st.subheader("🚀 Actions & Progress (Top)")
 col_b1_top, col_b2_top = st.columns([3, 2])
 
 with col_b1_top:
     process_button_top_clicked = st.button(
-        "✨ Process Files & Merge (Top)",
-        key="process_button_top", # Unique key
+        "✨ Process Files & Create Document (Top)", # Renamed
+        key="process_button_top",
         use_container_width=True, type="primary",
         disabled=st.session_state.processing_started or not st.session_state.ordered_files
     )
@@ -169,17 +174,16 @@ with col_b2_top:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
         st.download_button(
-            label=f"📥 Download Merged ({st.session_state.files_processed_count}) Files (.docx)",
+            label=f"📥 Download Processed ({st.session_state.files_processed_count}) Files (.docx)", # Updated label
             data=st.session_state.merged_doc_buffer,
-            file_name="merged_arabic_documents.docx",
+            file_name="processed_arabic_document.docx", # Updated filename
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_merged_button_top", # Unique key
+            key="download_merged_button_top",
             use_container_width=True
         )
     elif st.session_state.processing_started:
-         st.info("Processing in progress...", icon="⏳")
+        st.info("Processing in progress...", icon="⏳")
     else:
-        # Placeholder or message when download isn't ready
         st.markdown("*(Download button appears here after processing)*")
 
 
@@ -195,7 +199,6 @@ st.subheader(f"Files in Processing Order ({len(st.session_state.ordered_files)})
 if not st.session_state.ordered_files:
     st.info("Use the uploader above to add files. They will appear here for ordering.")
 else:
-    # Header row
     col_h1, col_h2, col_h3, col_h4, col_h5 = st.columns([0.5, 5, 1, 1, 1])
     with col_h1: st.markdown("**#**")
     with col_h2: st.markdown("**Filename**")
@@ -203,7 +206,6 @@ else:
     with col_h4: st.markdown("**Down**")
     with col_h5: st.markdown("**Remove**")
 
-    # File rows
     for i, file in enumerate(st.session_state.ordered_files):
         col1, col2, col3, col4, col5 = st.columns([0.5, 5, 1, 1, 1])
         with col1: st.write(f"{i+1}")
@@ -212,7 +214,6 @@ else:
         with col4: st.button("⬇️", key=f"down_{i}", on_click=move_file, args=(i, 1), disabled=(i == len(st.session_state.ordered_files) - 1), help="Move Down")
         with col5: st.button("❌", key=f"del_{i}", on_click=remove_file, args=(i,), help="Remove")
 
-    # Clear all button
     st.button("🗑️ Remove All Files",
               key="remove_all_button",
               on_click=clear_all_files_callback,
@@ -222,14 +223,14 @@ else:
 
 st.markdown("---") # Separator after file list
 
-# --- BOTTOM: Buttons Area & Progress Indicators ---
+# --- BOTTOM: Buttons Area & Progress Indicators (Updated labels) ---
 st.subheader("🚀 Actions & Progress (Bottom)")
 col_b1_bottom, col_b2_bottom = st.columns([3, 2])
 
 with col_b1_bottom:
     process_button_bottom_clicked = st.button(
-        "✨ Process Files & Merge (Bottom)",
-        key="process_button_bottom", # Unique key
+        "✨ Process Files & Create Document (Bottom)", # Renamed
+        key="process_button_bottom",
         use_container_width=True, type="primary",
         disabled=st.session_state.processing_started or not st.session_state.ordered_files
     )
@@ -238,17 +239,16 @@ with col_b2_bottom:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
         st.download_button(
-            label=f"📥 Download Merged ({st.session_state.files_processed_count}) Files (.docx)",
+            label=f"📥 Download Processed ({st.session_state.files_processed_count}) Files (.docx)", # Updated label
             data=st.session_state.merged_doc_buffer,
-            file_name="merged_arabic_documents.docx",
+            file_name="processed_arabic_document.docx", # Updated filename
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_merged_button_bottom", # Unique key
+            key="download_merged_button_bottom",
             use_container_width=True
         )
     elif st.session_state.processing_started:
         st.info("Processing in progress...", icon="⏳")
     else:
-        # Placeholder or message when download isn't ready
         st.markdown("*(Download button appears here after processing)*")
 
 # Placeholders for bottom progress indicators
@@ -274,164 +274,203 @@ if process_button_top_clicked or process_button_bottom_clicked:
         st.session_state.processing_started = False
     elif not rules_prompt:
         st.warning("⚠️ The 'Extraction Rules' field is empty. Processing without specific instructions.")
-    # --- NEW: Check selected model ---
     elif not selected_model_id:
-         st.error("❌ No Gemini model selected in the sidebar.") # Should not happen with default
-         st.session_state.processing_started = False
+        st.error("❌ No Gemini model selected in the sidebar.")
+        st.session_state.processing_started = False
 
     # Proceed only if checks passed
     if st.session_state.ordered_files and api_key and st.session_state.processing_started and selected_model_id:
 
-        processed_doc_streams = []
-        total_files = len(st.session_state.ordered_files)
+        # --- NEW: Initialize the master Document object ---
+        master_document = Document()
+        try:
+            # Set default styles ONCE for the whole document
+            style = master_document.styles['Normal']
+            font = style.font
+            font.name = 'Arial'
+            font.rtl = True
 
-        # Initialize BOTH progress bars
-        progress_bar_top = progress_bar_placeholder_top.progress(0, text="Starting processing...")
-        progress_bar_bottom = progress_bar_placeholder_bottom.progress(0, text="Starting processing...")
+            # Set complex script font using oxml
+            style_element = style.element
+            rpr_elements = style_element.xpath('.//w:rPr')
+            rpr = rpr_elements[0] if rpr_elements else OxmlElement('w:rPr')
+            if not rpr_elements: style_element.append(rpr) # Append if created
 
-        for i, file_to_process in enumerate(st.session_state.ordered_files):
-            original_filename = file_to_process.name
-            current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
-            progress_text = f"Processing {current_file_status}..."
+            font_name_element = rpr.find(qn('w:rFonts'))
+            if font_name_element is None:
+                font_name_element = OxmlElement('w:rFonts')
+                rpr.append(font_name_element)
+            font_name_element.set(qn('w:cs'), 'Arial') # Complex Script font
 
-            # Update BOTH progress bars and status texts
-            progress_value = i / total_files
-            progress_bar_top.progress(progress_value, text=progress_text)
-            progress_bar_bottom.progress(progress_value, text=progress_text)
-            status_text_placeholder_top.info(f"🔄 Starting {current_file_status}")
-            status_text_placeholder_bottom.info(f"🔄 Starting {current_file_status}")
+            # Set default paragraph format to RTL
+            paragraph_format = style.paragraph_format
+            paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            paragraph_format.right_to_left = True
+            logging.info("Initialized master Document and set default styles for Arabic.")
+        except Exception as style_exc:
+            logging.error(f"Failed to set default styles on master document: {style_exc}", exc_info=True)
+            st.error(f"❌ Critical error initializing document styles: {style_exc}")
+            st.session_state.processing_started = False # Stop processing
+            master_document = None # Ensure we don't proceed
+
+
+        # --- Proceed only if document initialization succeeded ---
+        if master_document is not None:
+            files_successfully_appended = 0 # Counter for successful appends
+            total_files = len(st.session_state.ordered_files)
+
+            # Initialize BOTH progress bars
+            progress_bar_top = progress_bar_placeholder_top.progress(0, text="Starting processing...")
+            progress_bar_bottom = progress_bar_placeholder_bottom.progress(0, text="Starting processing...")
+
+            for i, file_to_process in enumerate(st.session_state.ordered_files):
+                original_filename = file_to_process.name
+                current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
+                progress_text = f"Processing {current_file_status}..."
+
+                # Update BOTH progress bars and status texts
+                progress_value = i / total_files
+                progress_bar_top.progress(progress_value, text=progress_text)
+                progress_bar_bottom.progress(progress_value, text=progress_text)
+                status_text_placeholder_top.info(f"🔄 Starting {current_file_status}")
+                status_text_placeholder_bottom.info(f"🔄 Starting {current_file_status}")
+
+                with results_container:
+                    st.markdown(f"--- \n**Processing: {original_filename}**")
+
+                raw_text = None
+                processed_text = ""
+                extraction_error = False
+                gemini_error_occurred = False
+                append_error_occurred = False # New flag for append errors
+
+                # 1. Extract Text
+                status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
+                status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
+                try:
+                    file_to_process.seek(0)
+                    raw_text = backend.extract_text_from_pdf(file_to_process)
+                    if raw_text is None:
+                        with results_container: st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
+                        extraction_error = True
+                    elif isinstance(raw_text, str) and raw_text.startswith("Error:"):
+                        with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
+                        extraction_error = True
+                    elif not raw_text or not raw_text.strip():
+                        with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. Placeholder will be added.")
+                        processed_text = "" # Ensure processed_text is empty for append logic
+                except Exception as ext_exc:
+                    with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
+                    extraction_error = True
+
+                # 2. Process with Gemini
+                if not extraction_error: # Proceed only if extraction didn't fail critically
+                    if raw_text and raw_text.strip(): # Only call Gemini if there's text
+                        status_text_placeholder_top.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
+                        status_text_placeholder_bottom.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
+                        try:
+                            processed_text_result = backend.process_text_with_gemini(
+                                api_key, raw_text, rules_prompt, selected_model_id
+                            )
+                            if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
+                                with results_container: st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
+                                gemini_error_occurred = True
+                                processed_text = "" # Use empty string on Gemini error
+                            else:
+                                processed_text = processed_text_result
+                        except Exception as gem_exc:
+                            with results_container: st.error(f"❌ Unexpected error during Gemini processing for '{original_filename}': {gem_exc}")
+                            gemini_error_occurred = True
+                            processed_text = "" # Use empty string on unexpected error
+                    else:
+                         # If extraction yielded empty text, processed_text remains ""
+                         logging.info(f"Skipping Gemini for '{original_filename}' as extracted text was empty.")
+
+                    # 3. --- NEW: Append to Master Document ---
+                    status_text_placeholder_top.info(f"📝 Appending content for {current_file_status} to document...")
+                    status_text_placeholder_bottom.info(f"📝 Appending content for {current_file_status} to document...")
+                    try:
+                        append_success = backend.append_text_to_document(
+                            master_document,
+                            processed_text,
+                            original_filename,
+                            is_first_file=(i == 0)
+                        )
+                        if append_success:
+                            with results_container:
+                                success_msg = f"✅ Appended content for '{original_filename}'."
+                                if not processed_text or not processed_text.strip():
+                                    if gemini_error_occurred: success_msg += " (Note: placeholder used due to Gemini error)"
+                                    elif raw_text is None or not raw_text.strip() and not extraction_error: success_msg += " (Note: placeholder used as no text was extracted)"
+                                    else: success_msg += " (Note: placeholder used as content was empty)"
+                                st.success(success_msg)
+                            files_successfully_appended += 1 # Increment success counter
+                        else:
+                            # Error message should have been logged/added by backend function
+                            with results_container: st.error(f"❌ Failed to append content for '{original_filename}' (see logs/document for details).")
+                            append_error_occurred = True
+
+                    except Exception as append_exc:
+                        with results_container: st.error(f"❌ Unexpected error appending content for '{original_filename}': {append_exc}")
+                        append_error_occurred = True
+
+                else: # Extraction failed critically
+                     with results_container: st.warning(f"⏩ Skipping Gemini processing and document appending for '{original_filename}' due to extraction errors.")
+
+
+                # Update overall progress on BOTH bars
+                status_msg_suffix = ""
+                if extraction_error or gemini_error_occurred or append_error_occurred: status_msg_suffix = " with issues."
+                final_progress_value = (i + 1) / total_files
+                final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
+                progress_bar_top.progress(final_progress_value, text=final_progress_text)
+                progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
+
+            # --- End of file loop ---
+
+            # Clear BOTH progress bars and status texts
+            progress_bar_placeholder_top.empty()
+            status_text_placeholder_top.empty()
+            progress_bar_placeholder_bottom.empty()
+            status_text_placeholder_bottom.empty()
+
+            # 4. --- NEW: Save the Master Document ---
+            final_status_message = ""
+            rerun_needed = False
 
             with results_container:
-                st.markdown(f"--- \n**Processing: {original_filename}**")
+                st.markdown("---") # Separator before final status
+                if files_successfully_appended > 0 or total_files > 0: # Save even if only placeholders/errors were added
+                    st.info(f"💾 Finalizing Word document containing content from {files_successfully_appended}/{total_files} file(s)...")
+                    try:
+                        final_doc_stream = io.BytesIO()
+                        master_document.save(final_doc_stream)
+                        final_doc_stream.seek(0)
 
-            raw_text = None
-            processed_text = ""
-            extraction_error = False
-            gemini_error_occurred = False
-            word_creation_error_occurred = False
-
-            # 1. Extract Text
-            # Update BOTH status texts
-            status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
-            status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
-            try:
-                 file_to_process.seek(0)
-                 raw_text = backend.extract_text_from_pdf(file_to_process)
-                 if raw_text is None:
-                     with results_container: st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
-                     extraction_error = True
-                 elif isinstance(raw_text, str) and raw_text.startswith("Error:"):
-                     with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
-                     extraction_error = True
-                 elif not raw_text or not raw_text.strip():
-                     with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. An empty section will be added.")
-                     processed_text = ""
-            except Exception as ext_exc:
-                 with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
-                 extraction_error = True
-
-            # 2. Process with Gemini
-            if not extraction_error and raw_text and raw_text.strip():
-                 # Update BOTH status texts
-                 status_text_placeholder_top.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
-                 status_text_placeholder_bottom.info(f"🤖 Sending text from {current_file_status} to Gemini ({selected_model_display_name})...")
-                 try:
-                     # --- Pass selected_model_id to backend ---
-                     processed_text_result = backend.process_text_with_gemini(
-                         api_key, raw_text, rules_prompt, selected_model_id
-                     )
-                     # ---                                      ---
-                     if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
-                         with results_container: st.error(f"❌ Gemini error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
-                         gemini_error_occurred = True
-                         processed_text = ""
-                     else:
-                         processed_text = processed_text_result
-                 except Exception as gem_exc:
-                      with results_container: st.error(f"❌ Unexpected error during Gemini processing for '{original_filename}': {gem_exc}")
-                      gemini_error_occurred = True
-                      processed_text = ""
-
-            # 3. Create Individual Word Document
-            word_doc_stream = None
-            if not extraction_error:
-                 # Update BOTH status texts
-                 status_text_placeholder_top.info(f"📝 Creating intermediate Word document for {current_file_status}...")
-                 status_text_placeholder_bottom.info(f"📝 Creating intermediate Word document for {current_file_status}...")
-                 try:
-                     word_doc_stream = backend.create_word_document(processed_text)
-                     if word_doc_stream:
-                          processed_doc_streams.append((original_filename, word_doc_stream))
-                          with results_container:
-                               success_msg = f"✅ Created intermediate Word file for '{original_filename}'."
-                               if not processed_text or not processed_text.strip():
-                                   if gemini_error_occurred: success_msg += " (Note: placeholder text used due to Gemini error)"
-                                   elif raw_text is None or not raw_text.strip(): success_msg += " (Note: placeholder text used as no text was extracted)"
-                                   else: success_msg += " (Note: content appears empty)"
-                               st.success(success_msg)
-                     else:
-                          word_creation_error_occurred = True
-                          with results_container: st.error(f"❌ Failed to create intermediate Word file for '{original_filename}' (backend returned None).")
-                 except Exception as doc_exc:
-                      word_creation_error_occurred = True
-                      with results_container: st.error(f"❌ Error during intermediate Word file creation for '{original_filename}': {doc_exc}")
-
-            # Update overall progress on BOTH bars
-            status_msg_suffix = ""
-            if extraction_error or word_creation_error_occurred or gemini_error_occurred: status_msg_suffix = " with issues."
-            final_progress_value = (i + 1) / total_files
-            final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
-            progress_bar_top.progress(final_progress_value, text=final_progress_text)
-            progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
-
-        # --- End of file loop ---
-
-        # Clear BOTH progress bars and status texts
-        progress_bar_placeholder_top.empty()
-        status_text_placeholder_top.empty()
-        progress_bar_placeholder_bottom.empty()
-        status_text_placeholder_bottom.empty()
-
-        # 4. Merge Documents and Update State
-        final_status_message = ""
-        rerun_needed = False
-        successfully_created_doc_count = len(processed_doc_streams)
-
-        with results_container:
-            st.markdown("---") # Separator before final status
-            if successfully_created_doc_count > 0:
-                st.info(f"💾 Merging {successfully_created_doc_count} intermediate Word document(s)... Please wait.")
-                try:
-                    merged_doc_buffer = backend.merge_word_documents(processed_doc_streams)
-
-                    if merged_doc_buffer:
-                        st.session_state.merged_doc_buffer = merged_doc_buffer
-                        st.session_state.files_processed_count = successfully_created_doc_count
-                        final_status_message = f"✅ Processing complete! Merged document created from {successfully_created_doc_count} source file(s). Click 'Download Merged' above or below."
+                        st.session_state.merged_doc_buffer = final_doc_stream
+                        st.session_state.files_processed_count = files_successfully_appended # Store count of successes
+                        final_status_message = f"✅ Processing complete! Document created with content from {files_successfully_appended} source file(s)."
+                        if files_successfully_appended < total_files:
+                             final_status_message += f" ({total_files - files_successfully_appended} file(s) had issues - check statuses above)."
                         st.success(final_status_message)
                         rerun_needed = True # Rerun to show download buttons
-                    else:
-                        final_status_message = "❌ Failed to merge Word documents (backend returned None)."
+
+                    except Exception as save_exc:
+                        final_status_message = f"❌ Error saving the final Word document: {save_exc}"
+                        logging.error(f"Error during final document save: {save_exc}", exc_info=True)
                         st.error(final_status_message)
-                except Exception as merge_exc:
-                    final_status_message = f"❌ Error during document merging: {merge_exc}"
-                    logging.error(f"Error during merge_word_documents call: {merge_exc}", exc_info=True)
-                    st.error(final_status_message)
-            else:
-                 final_status_message = "⚠️ No intermediate Word documents were successfully created to merge."
-                 st.warning(final_status_message)
-                 if st.session_state.ordered_files: st.info("Please check the individual file statuses above for errors.")
+                else: # Should not happen if initial checks passed, but as a fallback
+                    final_status_message = "⚠️ No files were processed or appended."
+                    st.warning(final_status_message)
 
-        st.session_state.processing_complete = True
-        st.session_state.processing_started = False
+            st.session_state.processing_complete = True
+            st.session_state.processing_started = False
 
-        if rerun_needed:
-            st.rerun() # Rerun to make download buttons visible / update UI state
+            if rerun_needed:
+                st.rerun() # Rerun to make download buttons visible / update UI state
 
-    else:
-        # Processing didn't start due to initial checks failing
-        if not st.session_state.ordered_files or not api_key or not selected_model_id:
-             st.session_state.processing_started = False # Ensure it's reset
+    else: # Initial checks failed (no files, no api key, etc.) or doc init failed
+        st.session_state.processing_started = False # Ensure it's reset
 
 
 # --- Fallback info message (Unchanged) ---
