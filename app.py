@@ -1,4 +1,4 @@
-# app.py (Modified for DOCX Input, Translation, Merging, and Visual ETA Remaining)
+# app.py (Modified for DOCX Input, Translation, Merging, Visual ETA, and Pro Default)
 
 import streamlit as st
 import backend  # Assumes backend.py (backend_py_updated_v1) is in the same directory
@@ -142,7 +142,7 @@ model_options = {
 selected_model_display_name = st.sidebar.selectbox(
     "Choose the Gemini model for translation:",
     options=list(model_options.keys()),
-    index=0, # Default to Flash
+    index=1, # UPDATED: Default to Pro (index 1) instead of Flash (index 0)
     key="gemini_model_select",
     help="Select the AI model. Pro is better for nuanced translation but slower."
 )
@@ -341,9 +341,6 @@ if process_button_top_clicked or process_button_bottom_clicked:
             files_remaining = total_files - i
             # Simple estimate: time left is time for remaining files + base time (assuming base time is mostly merge)
             estimated_remaining_seconds = (files_remaining * time_per_file) + BASE_PROCESSING_TIME_SECONDS
-            # Alternative: Subtract estimated time for completed files from total estimate
-            # estimated_elapsed_for_files = i * time_per_file
-            # estimated_remaining_seconds = estimated_total_seconds - estimated_elapsed_for_files
             remaining_time_str = format_time(estimated_remaining_seconds)
             # --- End Remaining Time Calculation ---
 
