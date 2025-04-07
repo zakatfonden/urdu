@@ -1,43 +1,40 @@
-# app.py (Modified for Urdu to Arabic - Aggressive Footnote Removal Prompt)
+# app.py (Modified for DOCX Input, Translation, and Merging)
 
 import streamlit as st
-import backend  # Assumes backend.py is in the same directory
+import backend  # Assumes backend_py_docx_merge.py is in the same directory
 import os
-# import io # No longer needed because we import BytesIO directly
-from io import BytesIO # Import BytesIO directly
+from io import BytesIO
 import logging
-
-# --- Import docx elements for direct manipulation ---
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
-# ---
+# docx imports no longer needed directly in app.py for this workflow
+# from docx import Document
+# from docx.shared import Pt
+# from docx.enum.text import WD_ALIGN_PARAGRAPH
+# from docx.oxml.ns import qn
+# from docx.oxml import OxmlElement
 
 # Configure basic logging if needed
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="UrduPDF",
-    page_icon="🇵🇰",
+    page_title="UrduDoc Translator", # Changed title
+    page_icon="🔄",
     layout="wide"
 )
 
-# --- Initialize Session State (Unchanged) ---
+# --- Initialize Session State ---
 default_state = {
     'merged_doc_buffer': None,
-    'files_processed_count': 0,
+    'files_processed_count': 0, # Counts files successfully processed into intermediate docs
     'processing_complete': False,
     'processing_started': False,
-    'ordered_files': [],
+    'ordered_files': [], # List to hold UploadedFile objects for .docx
 }
 for key, value in default_state.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions ---
 def reset_processing_state():
     """Resets state related to processing results and status."""
     st.session_state.merged_doc_buffer = None
@@ -67,34 +64,45 @@ def remove_file(index):
         st.warning(f"Could not remove file at index {index} (already removed or invalid?).")
 
 def handle_uploads():
-    """Adds newly uploaded files to the ordered list, avoiding duplicates by name."""
-    if 'pdf_uploader' in st.session_state and st.session_state.pdf_uploader:
+    """Adds newly uploaded files (.docx) to the ordered list."""
+    # --- CHANGED: Use a different key to avoid conflict if user switches between apps ---
+    uploader_key = "docx_uploader"
+    if uploader_key in st.session_state and st.session_state[uploader_key]:
         current_filenames = {f.name for f in st.session_state.ordered_files}
         new_files_added_count = 0
-        for uploaded_file in st.session_state.pdf_uploader:
-            if uploaded_file.name not in current_filenames:
-                st.session_state.ordered_files.append(uploaded_file)
-                current_filenames.add(uploaded_file.name)
-                new_files_added_count += 1
+        for uploaded_file in st.session_state[uploader_key]:
+             # Basic check for file extension (optional but good practice)
+            if uploaded_file.name.lower().endswith('.docx'):
+                if uploaded_file.name not in current_filenames:
+                    st.session_state.ordered_files.append(uploaded_file)
+                    current_filenames.add(uploaded_file.name)
+                    new_files_added_count += 1
+                # else: # Optional: Notify about duplicates
+                #     st.toast(f"File '{uploaded_file.name}' is already in the list.")
+            else:
+                 st.warning(f"Skipped '{uploaded_file.name}'. Only .docx files are accepted.", icon="⚠️")
+
 
         if new_files_added_count > 0:
-            st.toast(f"Added {new_files_added_count} new file(s) to the end of the list.")
+            st.toast(f"Added {new_files_added_count} new DOCX file(s) to the list.")
             reset_processing_state()
-            # Clear the uploader widget state after processing its contents
-            # st.session_state.pdf_uploader = [] # Optional: Uncomment if you want uploader to clear visually
+        # Clear the uploader widget state after processing
+        # st.session_state[uploader_key] = [] # Optional
 
 def clear_all_files_callback():
     """Clears the ordered file list and resets processing state."""
     st.session_state.ordered_files = []
-    if 'pdf_uploader' in st.session_state:
-        st.session_state.pdf_uploader = []
+    # --- CHANGED: Use the correct uploader key ---
+    uploader_key = "docx_uploader"
+    if uploader_key in st.session_state:
+        st.session_state[uploader_key] = []
     reset_processing_state()
     st.toast("Removed all files from the list.")
 
 
 # --- Page Title ---
-st.title("🇵🇰 UrduPDF to Arabic - PDF to Word Extractor")
-st.markdown("Upload PDF files (primarily Urdu), arrange order, process (clean & translate to Arabic), and download as a single Word document.")
+st.title("🔄 Urdu/Farsi/English DOCX to Arabic Translator") # Changed
+st.markdown("Upload Word (`.docx`) files, arrange order, translate content to Arabic, and download the merged result.") # Changed
 
 # --- Sidebar ---
 st.sidebar.header("⚙️ Configuration")
@@ -103,7 +111,7 @@ st.sidebar.header("⚙️ Configuration")
 api_key_from_secrets = st.secrets.get("GEMINI_API_KEY", "")
 api_key = st.sidebar.text_input(
     "Enter your Google Gemini API Key", type="password",
-    help="Required. Get your key from Google AI Studio.", value=api_key_from_secrets or ""
+    help="Required for translation. Get your key from Google AI Studio.", value=api_key_from_secrets or ""
 )
 # API Key Status Messages (Unchanged)
 if api_key_from_secrets and api_key == api_key_from_secrets: st.sidebar.success("API Key loaded from Secrets.", icon="✅")
@@ -112,64 +120,66 @@ elif api_key and not api_key_from_secrets: st.sidebar.info("Using manually enter
 elif api_key and api_key_from_secrets and api_key != api_key_from_secrets: st.sidebar.info("Using manually entered API Key (overrides secret).", icon="⌨️")
 
 # Model Selection (Unchanged)
-st.sidebar.markdown("---") # Separator
-st.sidebar.header("🧠 AI Model")
+st.sidebar.markdown("---")
+st.sidebar.header("🧠 AI Model for Translation")
 model_options = {
     "Gemini 1.5 Flash (Fastest, Cost-Effective)": "gemini-1.5-flash-latest",
     "Gemini 1.5 Pro (Advanced, Slower, Higher Cost)": "gemini-1.5-pro-latest",
 }
 selected_model_display_name = st.sidebar.selectbox(
-    "Choose the Gemini model for processing:",
+    "Choose the Gemini model for translation:",
     options=list(model_options.keys()),
     index=0,
     key="gemini_model_select",
-    help="Select the AI model. Pro is more capable but slower and costs more."
+    help="Select the AI model. Pro is better for nuanced translation."
 )
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
-# --- == UPDATED: Aggressive Footnote Removal Rules == ---
-st.sidebar.markdown("---") # Separator
-st.sidebar.header("📜 Processing Rules")
+# --- UPDATED: Translation Rules ---
+st.sidebar.markdown("---")
+st.sidebar.header("📜 Translation Rules")
+# Simplified prompt focusing only on translation
 default_rules = """
-You are an expert multilingual processor specializing in Urdu, Arabic, Farsi, and English document conversion. Your task is to process the provided text extracted from a PDF page, following these steps IN ORDER:
-
-1.  **Identify and DELETE Footnotes/Endnotes FIRST:** Before any other cleaning, scan the entire extracted text. Locate any text sections that are clearly footnotes or endnotes. These are typically found at the very bottom of a page's content stream, often start with markers (like numbers ¹ ² ³ or symbols * † ‡) corresponding to markers in the main text, and may use a smaller font size (though you only see text). **Delete these footnote/endnote sections entirely and permanently from the text.**
-2.  **Isolate Main Content:** After removing footnotes/endnotes in Step 1, identify and **completely delete** all remaining headers (text at the top of the page content) and footers (text at the bottom, including page numbers).
-3.  **Clean Remaining Text:** Review the resulting main body text (which should now be free of footnotes, headers, and footers) for potential OCR errors (common in Urdu/Farsi script). Correct obvious misinterpretations while preserving the original meaning and language (Urdu, Arabic, Farsi, or English).
-4.  **Translate to Arabic:** Accurately translate the *cleaned main body text* from Step 3 into Modern Standard Arabic. Ensure the translation is natural and conveys the original intent.
-5.  **Format Output:** Structure the translated Arabic text into logical paragraphs based on the source. Ensure correct Arabic script presentation (RTL, character forms, ligatures).
-6.  **Output Only Translated Main Text:** Return ONLY the final, formatted Arabic translation from Step 5. **Crucially, double-check that absolutely no headers, footers, page numbers, or footnote/endnote content appears in the output.** Do not include explanations or introductory phrases.
+Translate the following text accurately into Modern Standard Arabic.
+The input text might be in Urdu, Farsi, or English.
+Preserve the meaning and intent of the original text.
+Format the output as clean Arabic paragraphs suitable for a document.
+Return ONLY the Arabic translation, without any introductory phrases, explanations, or markdown formatting.
 """
 rules_prompt = st.sidebar.text_area(
-    "Enter the rules Gemini should follow:", value=default_rules, height=350, # Increased height further
-    help="Instructions for cleaning the extracted text (Urdu, etc.), removing headers/footers/footnotes, and translating to Arabic."
+    "Enter the translation instructions for Gemini:", value=default_rules, height=200,
+    help="Instructions for how Gemini should translate the text extracted from the Word documents."
 )
-# --- == END UPDATED RULES == ---
+# --- END UPDATED RULES ---
 
 
 # --- Main Area ---
 
-st.header("📁 Manage Files for Processing")
+st.header("📁 Manage DOCX Files for Translation")
 
-# File Uploader (Unchanged)
+# --- CHANGED: File Uploader for DOCX ---
 uploaded_files_widget = st.file_uploader(
-    "Choose PDF files to add to the list below:", type="pdf", accept_multiple_files=True,
-    key="pdf_uploader",
+    "Choose Word (.docx) files to translate:",
+    type="docx",  # Accept only .docx
+    accept_multiple_files=True,
+    key="docx_uploader", # Use a distinct key
     on_change=handle_uploads,
     label_visibility="visible"
 )
+# ---
 
 st.markdown("---")
 
-# --- TOP: Buttons Area & Progress Indicators (Unchanged structure) ---
+# --- TOP: Buttons Area & Progress Indicators ---
 st.subheader("🚀 Actions & Progress (Top)")
 col_b1_top, col_b2_top = st.columns([3, 2])
 
 with col_b1_top:
+    # --- CHANGED: Button key and label ---
     process_button_top_clicked = st.button(
-        "✨ Process Files & Create Document (Top)",
-        key="process_button_top",
+        "✨ Translate Files & Merge (Top)",
+        key="process_button_top_docx", # New key
         use_container_width=True, type="primary",
         disabled=st.session_state.processing_started or not st.session_state.ordered_files
     )
@@ -177,12 +187,13 @@ with col_b1_top:
 with col_b2_top:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
+        # --- CHANGED: Download button key, label, filename ---
         st.download_button(
-            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)",
+            label=f"📥 Download Merged ({st.session_state.files_processed_count}) Translations (.docx)",
             data=st.session_state.merged_doc_buffer,
-            file_name="translated_urdu_to_arabic.docx",
+            file_name="merged_arabic_translations.docx", # New filename
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_merged_button_top",
+            key="download_merged_button_top_docx", # New key
             use_container_width=True
         )
     elif st.session_state.processing_started:
@@ -197,12 +208,13 @@ status_text_placeholder_top = st.empty()
 
 st.markdown("---") # Separator before file list
 
-# --- Interactive File List (Unchanged) ---
+# --- Interactive File List (Unchanged logic, displays .docx files) ---
 st.subheader(f"Files in Processing Order ({len(st.session_state.ordered_files)}):")
 
 if not st.session_state.ordered_files:
-    st.info("Use the uploader above to add files. They will appear here for ordering.")
+    st.info("Use the uploader above to add DOCX files. They will appear here.")
 else:
+    # Header row
     col_h1, col_h2, col_h3, col_h4, col_h5 = st.columns([0.5, 5, 1, 1, 1])
     with col_h1: st.markdown("**#**")
     with col_h2: st.markdown("**Filename**")
@@ -210,16 +222,19 @@ else:
     with col_h4: st.markdown("**Down**")
     with col_h5: st.markdown("**Remove**")
 
+    # File rows - use unique keys based on index `i`
     for i, file in enumerate(st.session_state.ordered_files):
         col1, col2, col3, col4, col5 = st.columns([0.5, 5, 1, 1, 1])
         with col1: st.write(f"{i+1}")
         with col2: st.write(file.name)
-        with col3: st.button("⬆️", key=f"up_{i}", on_click=move_file, args=(i, -1), disabled=(i == 0), help="Move Up")
-        with col4: st.button("⬇️", key=f"down_{i}", on_click=move_file, args=(i, 1), disabled=(i == len(st.session_state.ordered_files) - 1), help="Move Down")
-        with col5: st.button("❌", key=f"del_{i}", on_click=remove_file, args=(i,), help="Remove")
+        # Ensure keys are unique for each file's buttons
+        with col3: st.button("⬆️", key=f"up_docx_{i}", on_click=move_file, args=(i, -1), disabled=(i == 0), help="Move Up")
+        with col4: st.button("⬇️", key=f"down_docx_{i}", on_click=move_file, args=(i, 1), disabled=(i == len(st.session_state.ordered_files) - 1), help="Move Down")
+        with col5: st.button("❌", key=f"del_docx_{i}", on_click=remove_file, args=(i,), help="Remove")
 
+    # --- CHANGED: Button key ---
     st.button("🗑️ Remove All Files",
-              key="remove_all_button",
+              key="remove_all_button_docx", # New key
               on_click=clear_all_files_callback,
               help="Click to remove all files from the list.",
               type="secondary")
@@ -227,14 +242,15 @@ else:
 
 st.markdown("---") # Separator after file list
 
-# --- BOTTOM: Buttons Area & Progress Indicators (Unchanged structure) ---
+# --- BOTTOM: Buttons Area & Progress Indicators ---
 st.subheader("🚀 Actions & Progress (Bottom)")
 col_b1_bottom, col_b2_bottom = st.columns([3, 2])
 
 with col_b1_bottom:
+     # --- CHANGED: Button key and label ---
     process_button_bottom_clicked = st.button(
-        "✨ Process Files & Create Document (Bottom)",
-        key="process_button_bottom",
+        "✨ Translate Files & Merge (Bottom)",
+        key="process_button_bottom_docx", # New key
         use_container_width=True, type="primary",
         disabled=st.session_state.processing_started or not st.session_state.ordered_files
     )
@@ -242,12 +258,13 @@ with col_b1_bottom:
 with col_b2_bottom:
     # Show download button if buffer exists and not processing
     if st.session_state.merged_doc_buffer and not st.session_state.processing_started:
+         # --- CHANGED: Download button key, label, filename ---
         st.download_button(
-            label=f"📥 Download Translated ({st.session_state.files_processed_count}) Files (.docx)",
+            label=f"📥 Download Merged ({st.session_state.files_processed_count}) Translations (.docx)",
             data=st.session_state.merged_doc_buffer,
-            file_name="translated_urdu_to_arabic.docx",
+            file_name="merged_arabic_translations.docx", # New filename
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_merged_button_bottom",
+            key="download_merged_button_bottom_docx", # New key
             use_container_width=True
         )
     elif st.session_state.processing_started:
@@ -259,27 +276,26 @@ with col_b2_bottom:
 progress_bar_placeholder_bottom = st.empty()
 status_text_placeholder_bottom = st.empty()
 
-# --- Container for Individual File Results (Displayed below bottom progress) ---
+# --- Container for Individual File Results ---
 results_container = st.container()
 
 
-# --- Processing Logic (Largely unchanged, relies on updated default_rules) ---
+# --- == Processing Logic (Extract-Translate-Create-Merge) == ---
 # Check if EITHER process button was clicked
 if process_button_top_clicked or process_button_bottom_clicked:
     reset_processing_state()
     st.session_state.processing_started = True
 
-    # Re-check conditions (Unchanged)
+    # Re-check conditions
     if not st.session_state.ordered_files:
-        st.warning("⚠️ No files in the list to process.")
+        st.warning("⚠️ No DOCX files in the list to process.")
         st.session_state.processing_started = False
     elif not api_key:
         st.error("❌ Please enter or configure your Gemini API Key in the sidebar.")
         st.session_state.processing_started = False
-    # Use updated default_rules if prompt is empty
-    elif not rules_prompt.strip(): # Check if stripped prompt is empty
-        st.warning("⚠️ The 'Processing Rules' field is empty. Processing with default translation/cleanup rules.")
-        current_rules = default_rules
+    elif not rules_prompt.strip():
+        st.warning("⚠️ The 'Translation Rules' field is empty. Using default rules.")
+        current_rules = default_rules # Use default if empty
     elif not selected_model_id:
         st.error("❌ No Gemini model selected in the sidebar.")
         st.session_state.processing_started = False
@@ -289,202 +305,175 @@ if process_button_top_clicked or process_button_bottom_clicked:
     # Proceed only if checks passed
     if st.session_state.ordered_files and api_key and st.session_state.processing_started and selected_model_id:
 
-        # Initialize the master Document object (Unchanged)
-        master_document = Document()
-        try:
-            # Set default styles ONCE for the whole document (Unchanged)
-            style = master_document.styles['Normal']
-            font = style.font
-            font.name = 'Arial'
-            font.rtl = True
+        processed_doc_streams = [] # List to hold intermediate arabic doc streams
+        files_successfully_processed = 0 # Counter for successful intermediate docs
+        total_files = len(st.session_state.ordered_files)
 
-            style_element = style.element
-            rpr_elements = style_element.xpath('.//w:rPr')
-            rpr = rpr_elements[0] if rpr_elements else OxmlElement('w:rPr')
-            if not rpr_elements: style_element.append(rpr)
+        # Initialize BOTH progress bars
+        progress_bar_top = progress_bar_placeholder_top.progress(0, text="Starting processing...")
+        progress_bar_bottom = progress_bar_placeholder_bottom.progress(0, text="Starting processing...")
 
-            font_name_element = rpr.find(qn('w:rFonts'))
-            if font_name_element is None:
-                font_name_element = OxmlElement('w:rFonts')
-                rpr.append(font_name_element)
-            font_name_element.set(qn('w:cs'), 'Arial')
+        for i, file_to_process in enumerate(st.session_state.ordered_files):
+            original_filename = file_to_process.name
+            current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
+            progress_text = f"Processing {current_file_status}..."
 
-            paragraph_format = style.paragraph_format
-            paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            paragraph_format.right_to_left = True
-            logging.info("Initialized master Document and set default styles for Arabic.")
-        except Exception as style_exc:
-            logging.error(f"Failed to set default styles on master document: {style_exc}", exc_info=True)
-            st.error(f"❌ Critical error initializing document styles: {style_exc}")
-            st.session_state.processing_started = False
-            master_document = None
-
-
-        # Proceed only if document initialization succeeded
-        if master_document is not None:
-            files_successfully_appended = 0
-            total_files = len(st.session_state.ordered_files)
-
-            # Initialize progress bars (Unchanged)
-            progress_bar_top = progress_bar_placeholder_top.progress(0, text="Starting processing...")
-            progress_bar_bottom = progress_bar_placeholder_bottom.progress(0, text="Starting processing...")
-
-            for i, file_to_process in enumerate(st.session_state.ordered_files):
-                original_filename = file_to_process.name
-                current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
-                progress_text = f"Processing {current_file_status}..."
-
-                # Update progress bars and status texts (Unchanged)
-                progress_value = i / total_files
-                progress_bar_top.progress(progress_value, text=progress_text)
-                progress_bar_bottom.progress(progress_value, text=progress_text)
-                status_text_placeholder_top.info(f"🔄 Starting {current_file_status}")
-                status_text_placeholder_bottom.info(f"🔄 Starting {current_file_status}")
-
-                with results_container:
-                    st.markdown(f"--- \n**Processing: {original_filename}**")
-
-                raw_text = None
-                processed_text = "" # This will hold the ARABIC translation
-                extraction_error = False
-                gemini_error_occurred = False
-                append_error_occurred = False
-
-                # 1. Extract Text (using updated backend with new hints)
-                status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
-                status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
-                try:
-                    file_to_process.seek(0)
-                    raw_text = backend.extract_text_from_pdf(file_to_process) # Backend now uses updated hints
-                    if raw_text is None:
-                        with results_container: st.error(f"❌ Critical error during text extraction. Skipping '{original_filename}'.")
-                        extraction_error = True
-                    elif isinstance(raw_text, str) and raw_text.startswith("Error:"):
-                        with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
-                        extraction_error = True
-                    elif not raw_text or not raw_text.strip():
-                        with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. Placeholder will be added.")
-                        processed_text = ""
-                except Exception as ext_exc:
-                    with results_container: st.error(f"❌ Unexpected error during text extraction for '{original_filename}': {ext_exc}")
-                    extraction_error = True
-
-                # 2. Process with Gemini (Clean, Translate using updated rules)
-                if not extraction_error:
-                    if raw_text and raw_text.strip():
-                        status_text_placeholder_top.info(f"🤖 Cleaning & Translating text from {current_file_status} via Gemini ({selected_model_display_name})...")
-                        status_text_placeholder_bottom.info(f"🤖 Cleaning & Translating text from {current_file_status} via Gemini ({selected_model_display_name})...")
-                        try:
-                            # Pass the potentially updated rules from the text area
-                            processed_text_result = backend.process_text_with_gemini(
-                                api_key, raw_text, current_rules, selected_model_id
-                            )
-                            if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
-                                with results_container: st.error(f"❌ Gemini processing/translation error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
-                                gemini_error_occurred = True
-                                processed_text = ""
-                            else:
-                                processed_text = processed_text_result # Should be Arabic translation
-                        except Exception as gem_exc:
-                            with results_container: st.error(f"❌ Unexpected error during Gemini processing/translation for '{original_filename}': {gem_exc}")
-                            gemini_error_occurred = True
-                            processed_text = ""
-                    else:
-                         logging.info(f"Skipping Gemini for '{original_filename}' as extracted text was empty.")
-
-                    # 3. Append Arabic Translation to Master Document
-                    status_text_placeholder_top.info(f"📝 Appending translated content for {current_file_status}...")
-                    status_text_placeholder_bottom.info(f"📝 Appending translated content for {current_file_status}...")
-                    try:
-                        # Backend function expects Arabic text and formats it correctly
-                        append_success = backend.append_text_to_document(
-                            master_document,
-                            processed_text, # This is now the Arabic translation
-                            original_filename,
-                            is_first_file=(i == 0)
-                        )
-                        if append_success:
-                            with results_container:
-                                success_msg = f"✅ Appended translated content for '{original_filename}'."
-                                if not processed_text or not processed_text.strip():
-                                     # Add appropriate note if placeholder was used
-                                     if gemini_error_occurred: success_msg += " (Note: placeholder used due to processing/translation error)"
-                                     elif raw_text is None or not raw_text.strip() and not extraction_error: success_msg += " (Note: placeholder used as no text was extracted)"
-                                     else: success_msg += " (Note: placeholder used as content was empty)"
-                                st.success(success_msg)
-                            files_successfully_appended += 1
-                        else:
-                            with results_container: st.error(f"❌ Failed to append translated content for '{original_filename}'.")
-                            append_error_occurred = True
-
-                    except Exception as append_exc:
-                        with results_container: st.error(f"❌ Unexpected error appending translated content for '{original_filename}': {append_exc}")
-                        append_error_occurred = True
-
-                else: # Extraction failed critically
-                     with results_container: st.warning(f"⏩ Skipping processing and appending for '{original_filename}' due to extraction errors.")
-
-
-                # Update progress (Unchanged)
-                status_msg_suffix = ""
-                if extraction_error or gemini_error_occurred or append_error_occurred: status_msg_suffix = " with issues."
-                final_progress_value = (i + 1) / total_files
-                final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
-                progress_bar_top.progress(final_progress_value, text=final_progress_text)
-                progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
-
-            # --- End of file loop ---
-
-            # Clear progress bars (Unchanged)
-            progress_bar_placeholder_top.empty()
-            status_text_placeholder_top.empty()
-            progress_bar_placeholder_bottom.empty()
-            status_text_placeholder_bottom.empty()
-
-            # 4. Save the Master Document (Now contains translations)
-            final_status_message = ""
-            rerun_needed = False
+            # Update progress bars and status texts
+            progress_value = i / total_files
+            progress_bar_top.progress(progress_value, text=progress_text)
+            progress_bar_bottom.progress(progress_value, text=progress_text)
+            status_text_placeholder_top.info(f"🔄 Starting {current_file_status}")
+            status_text_placeholder_bottom.info(f"🔄 Starting {current_file_status}")
 
             with results_container:
-                st.markdown("---")
-                if files_successfully_appended > 0 or total_files > 0:
-                    st.info(f"💾 Finalizing Word document with translations from {files_successfully_appended}/{total_files} file(s)...")
+                st.markdown(f"--- \n**Processing: {original_filename}**")
+
+            raw_text = None
+            translated_text = "" # Holds the Arabic translation
+            extraction_error = False
+            gemini_error_occurred = False
+            word_creation_error_occurred = False
+
+            # 1. Extract Text from DOCX
+            status_text_placeholder_top.info(f"📄 Extracting text from {current_file_status}...")
+            status_text_placeholder_bottom.info(f"📄 Extracting text from {current_file_status}...")
+            try:
+                # Use the new backend function for DOCX
+                raw_text = backend.extract_text_from_docx(file_to_process)
+                if isinstance(raw_text, str) and raw_text.startswith("Error:"):
+                    with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
+                    extraction_error = True
+                elif not raw_text or not raw_text.strip():
+                    with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. An empty section will be added.")
+                    # Keep raw_text empty, translation will be skipped
+                # else: # Success
+                #    with results_container: st.info(f"Extracted text length: {len(raw_text)}")
+
+            except Exception as ext_exc:
+                with results_container: st.error(f"❌ Unexpected error during DOCX text extraction for '{original_filename}': {ext_exc}")
+                extraction_error = True
+
+            # 2. Translate with Gemini (if text extracted)
+            if not extraction_error:
+                if raw_text and raw_text.strip():
+                    status_text_placeholder_top.info(f"🤖 Translating text from {current_file_status} via Gemini ({selected_model_display_name})...")
+                    status_text_placeholder_bottom.info(f"🤖 Translating text from {current_file_status} via Gemini ({selected_model_display_name})...")
                     try:
-                        # Use BytesIO() directly
-                        final_doc_stream = BytesIO()
-                        master_document.save(final_doc_stream)
-                        final_doc_stream.seek(0)
-
-                        st.session_state.merged_doc_buffer = final_doc_stream
-                        st.session_state.files_processed_count = files_successfully_appended
-                        final_status_message = f"✅ Processing complete! Document created with translations from {files_successfully_appended} source file(s)."
-                        if files_successfully_appended < total_files:
-                             final_status_message += f" ({total_files - files_successfully_appended} file(s) had issues - check statuses above)."
-                        st.success(final_status_message)
-                        rerun_needed = True
-
-                    except Exception as save_exc:
-                        final_status_message = f"❌ Error saving the final Word document: {save_exc}"
-                        logging.error(f"Error during final document save: {save_exc}", exc_info=True)
-                        st.error(final_status_message)
+                        # Use the same Gemini function, passing the extracted text and translation rules
+                        processed_text_result = backend.process_text_with_gemini(
+                            api_key, raw_text, current_rules, selected_model_id
+                        )
+                        if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
+                            with results_container: st.error(f"❌ Gemini translation error for '{original_filename}': {processed_text_result or 'Unknown API error'}")
+                            gemini_error_occurred = True
+                            translated_text = "" # Use empty string on error
+                        else:
+                            translated_text = processed_text_result # Store the Arabic translation
+                    except Exception as gem_exc:
+                        with results_container: st.error(f"❌ Unexpected error during Gemini translation for '{original_filename}': {gem_exc}")
+                        gemini_error_occurred = True
+                        translated_text = ""
                 else:
-                    final_status_message = "⚠️ No files were processed or appended."
-                    st.warning(final_status_message)
+                    # If no text extracted, skip translation
+                    logging.info(f"Skipping Gemini translation for '{original_filename}' as extracted text was empty.")
+                    translated_text = "" # Ensure it's empty
 
-            st.session_state.processing_complete = True
-            st.session_state.processing_started = False
+                # 3. Create Individual Word Document with Arabic Translation
+                status_text_placeholder_top.info(f"📝 Creating intermediate Word document for {current_file_status}...")
+                status_text_placeholder_bottom.info(f"📝 Creating intermediate Word document for {current_file_status}...")
+                try:
+                    # Use the new backend function to create a doc from the translated text
+                    word_doc_stream = backend.create_arabic_word_doc_from_text(
+                        translated_text,
+                        original_filename
+                    )
+                    if word_doc_stream:
+                        # Add the stream to the list for later merging
+                        processed_doc_streams.append((original_filename, word_doc_stream))
+                        files_successfully_processed += 1 # Increment counter
+                        with results_container:
+                            success_msg = f"✅ Created intermediate document for '{original_filename}'."
+                            if not translated_text or not translated_text.strip():
+                                if gemini_error_occurred: success_msg += " (Note: placeholder used due to translation error)"
+                                elif raw_text is None or not raw_text.strip() and not extraction_error: success_msg += " (Note: placeholder used as no text was extracted)"
+                                else: success_msg += " (Note: placeholder used as translation was empty)"
+                            st.success(success_msg)
+                    else:
+                        word_creation_error_occurred = True
+                        with results_container: st.error(f"❌ Failed to create intermediate Word file for '{original_filename}' (backend returned None).")
 
-            if rerun_needed:
-                st.rerun()
+                except Exception as doc_exc:
+                    word_creation_error_occurred = True
+                    with results_container: st.error(f"❌ Error during intermediate Word file creation for '{original_filename}': {doc_exc}")
 
-    else: # Initial checks failed or doc init failed
+            else: # Extraction failed critically
+                 with results_container: st.warning(f"⏩ Skipping translation and document creation for '{original_filename}' due to extraction errors.")
+
+
+            # Update overall progress on BOTH bars
+            status_msg_suffix = ""
+            if extraction_error or gemini_error_occurred or word_creation_error_occurred: status_msg_suffix = " with issues."
+            final_progress_value = (i + 1) / total_files
+            final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
+            progress_bar_top.progress(final_progress_value, text=final_progress_text)
+            progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
+
+        # --- End of file loop ---
+
+        # Clear BOTH progress bars and status texts
+        progress_bar_placeholder_top.empty()
+        status_text_placeholder_top.empty()
+        progress_bar_placeholder_bottom.empty()
+        status_text_placeholder_bottom.empty()
+
+        # 4. --- Merge Documents ---
+        final_status_message = ""
+        rerun_needed = False
+
+        with results_container:
+            st.markdown("---") # Separator before final status
+            if files_successfully_processed > 0:
+                st.info(f"💾 Merging {files_successfully_processed} translated Word document(s)... Please wait.")
+                try:
+                    # Call the merge function from the backend
+                    merged_buffer = backend.merge_word_documents(processed_doc_streams)
+
+                    if merged_buffer:
+                        st.session_state.merged_doc_buffer = merged_buffer
+                        st.session_state.files_processed_count = files_successfully_processed
+                        final_status_message = f"✅ Processing complete! Merged document created from {files_successfully_processed} source file(s)."
+                        if files_successfully_processed < total_files:
+                             final_status_message += f" ({total_files - files_successfully_processed} file(s) had issues)."
+                        st.success(final_status_message)
+                        rerun_needed = True # Rerun to show download buttons
+                    else:
+                        final_status_message = "❌ Failed to merge Word documents (backend returned None)."
+                        st.error(final_status_message)
+
+                except Exception as merge_exc:
+                    final_status_message = f"❌ Error during document merging: {merge_exc}"
+                    logging.error(f"Error during merge_word_documents call: {merge_exc}", exc_info=True)
+                    st.error(final_status_message)
+            elif total_files > 0:
+                 final_status_message = "⚠️ No documents were successfully processed to merge."
+                 st.warning(final_status_message)
+                 st.info("Please check the individual file statuses above for errors.")
+            # Else: No files were uploaded initially, already handled
+
+        st.session_state.processing_complete = True
         st.session_state.processing_started = False
 
+        if rerun_needed:
+            st.rerun() # Rerun to make download buttons visible / update UI state
 
-# --- Fallback info message (Unchanged) ---
+    else: # Initial checks failed (no files, no api key, etc.)
+        st.session_state.processing_started = False # Ensure it's reset
+
+
+# --- Fallback info message ---
 if not st.session_state.ordered_files and not st.session_state.processing_started and not st.session_state.processing_complete:
-    st.info("Upload PDF files using the 'Choose PDF files' button above.")
+    st.info("Upload Word (.docx) files using the button above.")
 
-# --- Footer (Unchanged) ---
+# --- Footer ---
 st.markdown("---")
 st.markdown("Developed with Streamlit and Google Gemini.")
