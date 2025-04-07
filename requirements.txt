@@ -1,7 +1,4 @@
 streamlit
 google-generativeai
-PyMuPDF
 python-docx
-google-cloud-vision
-pandas
 docxcompose
