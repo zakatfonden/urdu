@@ -1,4 +1,4 @@
-# app.py (Modified for DOCX Input, Translation, Merging, and Doubled ETA)
+# app.py (Modified for DOCX Input, Translation, Merging, and Visual ETA Remaining)
 
 import streamlit as st
 import backend  # Assumes backend.py (backend_py_updated_v1) is in the same directory
@@ -20,7 +20,7 @@ st.set_page_config(
 
 # --- Constants for Estimation ---
 # Adjust these based on observation if needed
-# UPDATED: Doubled the increased base time and time per file estimates
+# Using previously doubled values
 BASE_PROCESSING_TIME_SECONDS = 60  # Base time for setup, merging etc. (30 * 2)
 TIME_PER_FILE_FLASH_SECONDS = 60 # Estimated avg time per file for Gemini Flash (30 * 2)
 TIME_PER_FILE_PRO_SECONDS = 120  # Estimated avg time per file for Gemini Pro (60 * 2)
@@ -80,16 +80,13 @@ def handle_uploads():
                     st.session_state.ordered_files.append(uploaded_file)
                     current_filenames.add(uploaded_file.name)
                     new_files_added_count += 1
-                # else: # Optional: Notify about duplicates
-                #     st.toast(f"File '{uploaded_file.name}' is already in the list.")
             else:
                  st.warning(f"Skipped '{uploaded_file.name}'. Only .docx files are accepted.", icon="⚠️")
 
         if new_files_added_count > 0:
             st.toast(f"Added {new_files_added_count} new DOCX file(s) to the list.")
-            reset_processing_state() # Reset if files change
-        # Clear the uploader widget state after processing (optional, depends on desired UX)
-        # st.session_state[uploader_key] = []
+            reset_processing_state()
+        # st.session_state[uploader_key] = [] # Optional
 
 def clear_all_files_callback():
     """Clears the ordered file list and resets processing state."""
@@ -104,14 +101,15 @@ def format_time(seconds):
     """Formats seconds into a human-readable string (e.g., X min Y sec)."""
     if seconds < 0: seconds = 0 # Ensure non-negative time
     if seconds < 60:
+        # Show seconds precisely when less than a minute
         return f"{math.ceil(seconds)} sec"
     minutes = int(seconds // 60)
     remaining_seconds = math.ceil(seconds % 60)
     if remaining_seconds == 0:
         return f"{minutes} min"
     else:
-        # Pad seconds with leading zero if needed when minutes are present
-        sec_str = str(remaining_seconds).zfill(2) if minutes > 0 else str(remaining_seconds)
+        # Pad seconds with leading zero
+        sec_str = str(remaining_seconds).zfill(2)
         return f"{minutes} min {sec_str} sec"
 
 
@@ -317,14 +315,15 @@ if process_button_top_clicked or process_button_bottom_clicked:
         files_successfully_processed = 0 # Counter for successful intermediate docs
         total_files = len(st.session_state.ordered_files)
 
-        # --- Calculate and Display Estimated Time (Using updated constants) ---
+        # --- Calculate and Display Initial Estimated Time ---
         time_per_file = TIME_PER_FILE_PRO_SECONDS if "pro" in selected_model_id else TIME_PER_FILE_FLASH_SECONDS
+        # This is the total estimated duration for the whole process
         estimated_total_seconds = BASE_PROCESSING_TIME_SECONDS + (total_files * time_per_file)
         estimated_time_str = format_time(estimated_total_seconds)
-        initial_status_msg = f"⏳ Starting processing for {total_files} file(s). Estimated time: ~{estimated_time_str}"
+        initial_status_msg = f"⏳ Starting processing for {total_files} file(s). Initial estimate: ~{estimated_time_str}"
         status_text_placeholder_top.info(initial_status_msg)
         status_text_placeholder_bottom.info(initial_status_msg)
-        # --- End Estimation ---
+        # --- End Initial Estimation ---
 
         # Initialize BOTH progress bars
         progress_bar_top = progress_bar_placeholder_top.progress(0, text="Preparing...")
@@ -336,37 +335,51 @@ if process_button_top_clicked or process_button_bottom_clicked:
         for i, file_to_process in enumerate(st.session_state.ordered_files):
             original_filename = file_to_process.name
             current_file_status = f"'{original_filename}' ({i + 1}/{total_files})"
+
+            # --- Calculate Estimated Remaining Time ---
+            # Estimate based on how many files are left + remaining base time
+            files_remaining = total_files - i
+            # Simple estimate: time left is time for remaining files + base time (assuming base time is mostly merge)
+            estimated_remaining_seconds = (files_remaining * time_per_file) + BASE_PROCESSING_TIME_SECONDS
+            # Alternative: Subtract estimated time for completed files from total estimate
+            # estimated_elapsed_for_files = i * time_per_file
+            # estimated_remaining_seconds = estimated_total_seconds - estimated_elapsed_for_files
+            remaining_time_str = format_time(estimated_remaining_seconds)
+            # --- End Remaining Time Calculation ---
+
+            # Update progress bars and status texts including estimated remaining time
+            progress_value = i / total_files # Progress based on files started
             progress_text = f"Processing {current_file_status}..."
+            status_text = f"🔄 {progress_text} (Est. remaining: ~{remaining_time_str})"
 
-            # Update progress bars and status texts
-            progress_value = i / total_files
-            progress_bar_top.progress(progress_value, text=progress_text)
+            progress_bar_top.progress(progress_value, text=progress_text) # Bar shows overall progress
             progress_bar_bottom.progress(progress_value, text=progress_text)
-            status_text_placeholder_top.info(f"🔄 Processing {current_file_status}...")
-            status_text_placeholder_bottom.info(f"🔄 Processing {current_file_status}...")
+            status_text_placeholder_top.info(status_text) # Text shows detail + remaining time
+            status_text_placeholder_bottom.info(status_text)
 
+            # --- Start Processing Current File ---
             with results_container:
                 st.markdown(f"--- \n**Processing: {original_filename}**")
 
             raw_text = None
-            translated_text = "" # Holds the Arabic translation
+            translated_text = ""
             extraction_error = False
             gemini_error_occurred = False
             word_creation_error_occurred = False
 
-            # 4a. Extract Text from DOCX
+            # 4a. Extract Text
             try:
                 raw_text = backend.extract_text_from_docx(file_to_process)
                 if isinstance(raw_text, str) and raw_text.startswith("Error:"):
-                    with results_container: st.error(f"❌ Error extracting text from '{original_filename}': {raw_text}")
+                    with results_container: st.error(f"❌ Error extracting text: {raw_text}")
                     extraction_error = True
                 elif not raw_text or not raw_text.strip():
-                    with results_container: st.warning(f"⚠️ No text extracted from '{original_filename}'. An empty section will be added.")
+                    with results_container: st.warning(f"⚠️ No text extracted.")
             except Exception as ext_exc:
-                with results_container: st.error(f"❌ Unexpected error during DOCX text extraction for '{original_filename}': {ext_exc}")
+                with results_container: st.error(f"❌ Unexpected error during text extraction: {ext_exc}")
                 extraction_error = True
 
-            # 4b. Translate with Gemini (if text extracted)
+            # 4b. Translate
             if not extraction_error:
                 if raw_text and raw_text.strip():
                     try:
@@ -375,30 +388,29 @@ if process_button_top_clicked or process_button_bottom_clicked:
                         )
                         if processed_text_result is None or (isinstance(processed_text_result, str) and processed_text_result.startswith("Error:")):
                             error_msg = processed_text_result or 'Unknown API error'
-                            with results_container: st.error(f"❌ Gemini translation error for '{original_filename}': {error_msg}")
+                            with results_container: st.error(f"❌ Gemini translation error: {error_msg}")
                             gemini_error_occurred = True
                             translated_text = ""
                         else:
                             translated_text = processed_text_result
                     except Exception as gem_exc:
-                        with results_container: st.error(f"❌ Unexpected error during Gemini translation for '{original_filename}': {gem_exc}")
+                        with results_container: st.error(f"❌ Unexpected error during translation: {gem_exc}")
                         gemini_error_occurred = True
                         translated_text = ""
                 else:
-                    logging.info(f"Skipping Gemini translation for '{original_filename}' as extracted text was empty.")
+                    logging.info(f"Skipping translation for '{original_filename}' (no text).")
                     translated_text = ""
 
-                # 4c. Create Individual Word Document
+                # 4c. Create Doc
                 try:
                     word_doc_stream = backend.create_arabic_word_doc_from_text(
-                        translated_text,
-                        original_filename
+                        translated_text, original_filename
                     )
                     if word_doc_stream:
                         processed_doc_streams.append((original_filename, word_doc_stream))
                         files_successfully_processed += 1
                         with results_container:
-                            success_msg = f"✅ Created intermediate document for '{original_filename}'."
+                            success_msg = f"✅ Created intermediate document."
                             if not translated_text or not translated_text.strip():
                                 if gemini_error_occurred: success_msg += " (Note: placeholder used due to translation error)"
                                 elif raw_text is None or not raw_text.strip() and not extraction_error: success_msg += " (Note: placeholder used as no text was extracted)"
@@ -406,20 +418,23 @@ if process_button_top_clicked or process_button_bottom_clicked:
                             st.success(success_msg)
                     else:
                         word_creation_error_occurred = True
-                        with results_container: st.error(f"❌ Failed to create intermediate Word file for '{original_filename}' (backend returned None).")
+                        with results_container: st.error(f"❌ Failed to create intermediate Word file (backend returned None).")
                 except Exception as doc_exc:
                     word_creation_error_occurred = True
-                    with results_container: st.error(f"❌ Error during intermediate Word file creation for '{original_filename}': {doc_exc}")
+                    with results_container: st.error(f"❌ Error during intermediate Word file creation: {doc_exc}")
             else:
-                 with results_container: st.warning(f"⏩ Skipping translation and document creation for '{original_filename}' due to extraction errors.")
+                 with results_container: st.warning(f"⏩ Skipping translation and document creation due to extraction errors.")
 
-            # Update overall progress
+            # --- Update Progress Bar Fully After File 'i' is Done ---
+            # This makes the bar reflect completed files accurately.
             status_msg_suffix = ""
             if extraction_error or gemini_error_occurred or word_creation_error_occurred: status_msg_suffix = " with issues."
             final_progress_value = (i + 1) / total_files
             final_progress_text = f"Processed {current_file_status}{status_msg_suffix}"
+            # Only update the bar's internal text here, the visual status text was updated before processing the file.
             progress_bar_top.progress(final_progress_value, text=final_progress_text)
             progress_bar_bottom.progress(final_progress_value, text=final_progress_text)
+
 
         # --- End of file loop ---
         end_time = time.time() # Record end time
@@ -427,52 +442,63 @@ if process_button_top_clicked or process_button_bottom_clicked:
         actual_duration_str = format_time(actual_duration_seconds)
 
         # 5. --- Merge Documents ---
+        # Clear progress bars, update status to merging
         progress_bar_placeholder_top.empty()
         progress_bar_placeholder_bottom.empty()
-        status_text_placeholder_top.info(f"Processing complete ({actual_duration_str}). Preparing final document...")
-        status_text_placeholder_bottom.info(f"Processing complete ({actual_duration_str}). Preparing final document...")
+        merge_status_text = f"Processing complete ({actual_duration_str}). Merging {files_successfully_processed} documents..."
+        status_text_placeholder_top.info(merge_status_text)
+        status_text_placeholder_bottom.info(merge_status_text)
 
         final_status_message = ""
         merge_successful = False
 
         with results_container:
-            st.markdown("---")
+            st.markdown("---") # Separator before final merge status
             if files_successfully_processed > 0:
                 st.info(f"💾 Merging {files_successfully_processed} translated Word document(s)... Please wait.")
                 try:
+                    # Perform the merge
                     merged_buffer = backend.merge_word_documents(processed_doc_streams)
                     if merged_buffer:
                         st.session_state.merged_doc_buffer = merged_buffer
                         st.session_state.files_processed_count = files_successfully_processed
                         merge_successful = True
+                        # Final success message
                         final_status_message = f"✅ Success! Merged document created from {files_successfully_processed} source file(s)."
                         if files_successfully_processed < total_files:
                             final_status_message += f" ({total_files - files_successfully_processed} file(s) had issues)."
                         final_status_message += f" Total time: {actual_duration_str}."
                         status_text_placeholder_top.success(final_status_message)
                         status_text_placeholder_bottom.success(final_status_message)
-                        rerun_needed = True
+                        rerun_needed = True # Rerun to show download button
                     else:
+                        # Merge failed in backend
                         final_status_message = f"❌ Failed to merge Word documents (backend returned None). Total time: {actual_duration_str}."
                         status_text_placeholder_top.error(final_status_message)
                         status_text_placeholder_bottom.error(final_status_message)
                 except Exception as merge_exc:
+                    # Exception during merge
                     final_status_message = f"❌ Error during document merging: {merge_exc}. Total time: {actual_duration_str}."
                     logging.error(f"Error during merge_word_documents call: {merge_exc}", exc_info=True)
                     status_text_placeholder_top.error(final_status_message)
                     status_text_placeholder_bottom.error(final_status_message)
             elif total_files > 0:
+                 # No files were successfully processed to merge
                  final_status_message = f"⚠️ No documents were successfully processed to merge. Total time: {actual_duration_str}."
                  status_text_placeholder_top.warning(final_status_message)
                  status_text_placeholder_bottom.warning(final_status_message)
                  st.info("Please check the individual file statuses above for errors.")
+            # Else: No files were uploaded initially, already handled
 
+        # Final state updates
         st.session_state.processing_complete = True
         st.session_state.processing_started = False
 
+        # Rerun if merge was successful to update UI
         if rerun_needed:
             st.rerun()
-    else:
+
+    else: # Initial checks failed
         st.session_state.processing_started = False
 
 # --- Fallback info message ---
