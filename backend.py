@@ -1,228 +1,83 @@
-# backend.py (Modified for Urdu hints)
+# backend.py (Modified for DOCX Input, Translation, and Merging)
 
 import io
 import google.generativeai as genai
-from docx import Document
+from docx import Document # For reading/writing .docx
+# --- NEW: Import docxcompose for merging ---
+from docxcompose.composer import Composer
+# ---
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import logging
 import os
-import streamlit as st
-import json
-from google.cloud import vision
+# import streamlit as st # No longer needed in backend if Vision credentials removed
+# import json # No longer needed if Vision credentials removed
+# from google.cloud import vision # REMOVED
 
 # --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
 
-# --- Runtime Credentials Setup for Streamlit Cloud (Unchanged) ---
-CREDENTIALS_FILENAME = "google_credentials.json"
-_credentials_configured = False
+# --- REMOVED: Runtime Credentials Setup for Vision API ---
+# No longer needed if only using Gemini API Key
 
-if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
-    logging.info("Found GOOGLE_CREDENTIALS_JSON in Streamlit Secrets. Setting up credentials file.")
-    try:
-        credentials_json_content_from_secrets = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-        logging.info(f"Read {len(credentials_json_content_from_secrets)} characters from secret.")
-        logging.info(f"REPR of secret content (first 500 chars):\n>>>\n{repr(credentials_json_content_from_secrets[:500])}\n<<<")
-
-        if not credentials_json_content_from_secrets.strip():
-                logging.error("GOOGLE_CREDENTIALS_JSON secret is empty.")
-                _credentials_configured = False
-        else:
-            file_written_successfully = False
-            try:
-                cleaned_content = credentials_json_content_from_secrets
-                try:
-                    temp_data = json.loads(credentials_json_content_from_secrets)
-                    if 'private_key' in temp_data and isinstance(temp_data['private_key'], str):
-                        original_pk = temp_data['private_key']
-                        cleaned_pk = original_pk.replace('\r\n', '\n').replace('\r', '\n').replace('\\n', '\n')
-                        if cleaned_pk != original_pk:
-                            logging.warning("Attempted to clean '\\r' or incorrectly escaped '\\n' characters from private_key string.")
-                            temp_data['private_key'] = cleaned_pk
-                            cleaned_content = json.dumps(temp_data, indent=2)
-                        else:
-                            cleaned_content = credentials_json_content_from_secrets
-                    else:
-                        logging.warning("Could not find 'private_key' field (or it's not a string) in parsed secret data for cleaning.")
-                        cleaned_content = credentials_json_content_from_secrets
-                except json.JSONDecodeError:
-                    logging.warning("Initial parse for targeted cleaning failed. Trying global replace on raw string (less safe).")
-                    cleaned_content = credentials_json_content_from_secrets.replace('\r\n', '\n').replace('\r', '\n').replace('\\n', '\n')
-
-                with open(CREDENTIALS_FILENAME, "w", encoding='utf-8') as f:
-                    f.write(cleaned_content)
-                logging.info(f"Successfully wrote potentially cleaned credentials to {CREDENTIALS_FILENAME} using UTF-8 encoding.")
-                file_written_successfully = True
-            except Exception as write_err:
-                logging.error(f"CRITICAL Error during file writing (with cleaning attempt): {write_err}", exc_info=True)
-                _credentials_configured = False
-
-            if file_written_successfully:
-                credentials_content_read_back = None
-                try:
-                    with open(CREDENTIALS_FILENAME, "r", encoding='utf-8') as f:
-                        credentials_content_read_back = f.read()
-                    logging.info(f"Successfully read back {len(credentials_content_read_back)} characters from {CREDENTIALS_FILENAME}.")
-                    logging.info(f"REPR of read-back content (first 500 chars):\n>>>\n{repr(credentials_content_read_back[:500])}\n<<<")
-
-                    try:
-                        json.loads(credentials_content_read_back)
-                        logging.info("Manual JSON parsing of read-back content SUCCEEDED.")
-                        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = CREDENTIALS_FILENAME
-                        logging.info(f"GOOGLE_APPLICATION_CREDENTIALS set to point to: {CREDENTIALS_FILENAME}")
-                        _credentials_configured = True
-                    except json.JSONDecodeError as parse_err:
-                        logging.error(f"Manual JSON parsing of read-back content FAILED: {parse_err}", exc_info=True)
-                        _credentials_configured = False
-                    except Exception as manual_parse_generic_err:
-                        logging.error(f"Unexpected error during manual JSON parsing: {manual_parse_generic_err}", exc_info=True)
-                        _credentials_configured = False
-
-                except Exception as read_err:
-                    logging.error(f"CRITICAL Error reading back credentials file {CREDENTIALS_FILENAME}: {read_err}", exc_info=True)
-                    _credentials_configured = False
-
-    except Exception as e:
-        logging.error(f"CRITICAL Error reading secret: {e}", exc_info=True)
-        _credentials_configured = False
-
-elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-    logging.info("Using GOOGLE_APPLICATION_CREDENTIALS environment variable set externally.")
-    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
-        logging.info(f"External credentials file found at: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}")
-        _credentials_configured = True
-    else:
-        logging.error(f"External GOOGLE_APPLICATION_CREDENTIALS path not found or not set: {os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')}")
-        _credentials_configured = False
-
-else:
-    logging.warning("Vision API Credentials NOT found: Neither GOOGLE_CREDENTIALS_JSON secret nor GOOGLE_APPLICATION_CREDENTIALS env var is set.")
-    _credentials_configured = False
-# --- END: Runtime Credentials Setup ---
-
-
-# --- PDF/Image Processing with Google Cloud Vision ---
-def extract_text_from_pdf(pdf_file_obj):
+# --- NEW: Function to extract text from DOCX, skipping headers/footers ---
+def extract_text_from_docx(docx_file_obj):
     """
-    Extracts text from a PDF file object using Google Cloud Vision API OCR.
+    Extracts text from the main body of a DOCX file object,
+    attempting to skip headers and footers.
+
     Args:
-        pdf_file_obj: A file-like object representing the PDF.
+        docx_file_obj: A file-like object representing the DOCX file.
+
     Returns:
-        str: The extracted text, or an error string.
+        str: The extracted text, joined by newlines.
+             Returns an error string starting with "Error:" if a failure occurs.
     """
-    global _credentials_configured
-
-    if not _credentials_configured:
-        logging.error("Vision API credentials were not configured successfully during startup.")
-        return "Error: Vision API authentication failed (Credentials setup failed)."
-
-    credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not credentials_path or not os.path.exists(credentials_path):
-        logging.error(f"Credentials check failed just before client init: GOOGLE_APPLICATION_CREDENTIALS path '{credentials_path}' not valid or file doesn't exist.")
-        return "Error: Vision API credentials file missing or inaccessible at runtime."
-
     try:
-        logging.info(f"Initializing Google Cloud Vision client using credentials file: {credentials_path}")
-        client = vision.ImageAnnotatorClient()
-        logging.info("Vision client initialized successfully.")
+        docx_file_obj.seek(0)
+        document = Document(docx_file_obj)
+        full_text = []
 
-        pdf_file_obj.seek(0)
-        content = pdf_file_obj.read()
-        file_size = len(content)
-        logging.info(f"Read {file_size} bytes from PDF stream.")
+        # Iterate through paragraphs in the main document body
+        # This implicitly skips headers/footers which are in different parts
+        for para in document.paragraphs:
+            full_text.append(para.text)
 
-        if not content:
-            logging.warning("PDF content is empty.")
-            return ""
-
-        mime_type = "application/pdf"
-        input_config = vision.InputConfig(content=content, mime_type=mime_type)
-        features = [vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)]
-
-        # --- CHANGED: Updated language hints for Urdu focus ---
-        # Prioritize Urdu, but include others likely to appear.
-        # Vision API might auto-detect well, but hints can help guide it.
-        language_hints = ["ur", "ar", "fa", "en"]
-        image_context = vision.ImageContext(language_hints=language_hints)
-        logging.info(f"Using language hints for Vision API: {language_hints}")
-        # ---
-
-        request = vision.AnnotateFileRequest(
-            input_config=input_config, features=features, image_context=image_context
-        )
-
-        logging.info("Sending request to Google Cloud Vision API (batch_annotate_files)...")
-        response = client.batch_annotate_files(requests=[request])
-        logging.info("Received response from Vision API.")
-
-        if not response.responses:
-            logging.error("Vision API returned an empty response list.")
-            return "Error: Vision API returned no response."
-
-        first_file_response = response.responses[0]
-
-        if first_file_response.error.message:
-            error_message = f"Vision API Error for file: {first_file_response.error.message}"
-            logging.error(error_message)
-            return f"Error: {error_message}"
-
-        all_extracted_text = []
-        if not first_file_response.responses:
-            logging.warning("Vision API's AnnotateFileResponse contained an empty inner 'responses' list. No pages processed?")
-            return ""
-
-        for page_index, page_response in enumerate(first_file_response.responses):
-            if page_response.error.message:
-                logging.warning(f"  > Vision API Error for page {page_index + 1}: {page_response.error.message}")
-                continue
-            if page_response.full_text_annotation:
-                page_text = page_response.full_text_annotation.text
-                all_extracted_text.append(page_text)
-
-        extracted_text = "\n\n".join(all_extracted_text)
-
-        if extracted_text:
-            logging.info(f"Successfully extracted text from {len(all_extracted_text)} page(s) using Vision API. Total Length: {len(extracted_text)}")
-            if not extracted_text.strip():
-                logging.warning("Vision API processed pages, but extracted text is empty/whitespace after combining.")
-                return ""
-            return extracted_text
-        else:
-            logging.warning("Vision API response received, but no usable full_text_annotation found on any page.")
-            return ""
+        # Note: This simple approach doesn't explicitly handle footnotes,
+        # text boxes, or complex table content. Further refinement might be needed.
+        extracted_content = "\n".join(full_text)
+        logging.info(f"Extracted {len(extracted_content)} characters from DOCX main body.")
+        return extracted_content
 
     except Exception as e:
-        logging.error(f"CRITICAL Error during Vision API interaction: {e}", exc_info=True)
-        return f"Error: Failed to process PDF with Vision API. Exception: {e}"
+        logging.error(f"Error extracting text from DOCX: {e}", exc_info=True)
+        # Provide a more informative error message if possible
+        return f"Error: Failed to process DOCX file. Check if it's a valid .docx format. Details: {e}"
 
 
-# --- Gemini Processing (Unchanged - relies on prompt from app.py) ---
+# --- Gemini Processing (Simplified Prompt Focus - Translation Only) ---
 def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, model_name: str):
     """
-    Processes raw text using the specified Gemini API model based on provided rules
-    (which now include translation instructions from app.py).
+    Sends text (extracted from DOCX) to Gemini for translation based on rules.
 
     Args:
         api_key (str): The Gemini API key.
-        raw_text (str): The raw text extracted from the PDF (e.g., Urdu).
-        rules_prompt (str): User-defined rules/instructions for Gemini (e.g., clean & translate).
-        model_name (str): The specific Gemini model ID to use.
+        raw_text (str): The text extracted from the DOCX (Urdu, Farsi, English).
+        rules_prompt (str): User-defined rules (should focus on translation).
+        model_name (str): The specific Gemini model ID.
 
     Returns:
-        str: The processed text from Gemini (expected to be Arabic translation).
-             Returns empty string "" if raw_text is empty.
-             Returns an error string starting with "Error:" if a failure occurs.
+        str: The translated Arabic text from Gemini or an error string.
     """
     if not api_key:
         logging.error("Gemini API key is missing.")
         return "Error: Gemini API key is missing."
 
     if not raw_text or not raw_text.strip():
-        logging.warning("Skipping Gemini call: No raw text provided.")
-        return ""
+        logging.warning("Skipping Gemini call: No text extracted from DOCX.")
+        return "" # Return empty string if nothing to translate
 
     if not model_name:
         logging.error("Gemini model name is missing.")
@@ -233,7 +88,7 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, mod
         logging.info(f"Initializing Gemini model: {model_name}")
         model = genai.GenerativeModel(model_name)
 
-        # The prompt now contains translation instructions from app.py
+        # Construct the prompt using the rules provided (should focus on translation)
         full_prompt = f"""
         **Instructions:**
         {rules_prompt}
@@ -244,12 +99,13 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, mod
         ---
 
         **Output:**
-        Return ONLY the processed and formatted text according to the instructions.
+        Return ONLY the processed text (Arabic translation) according to the instructions.
         """
 
-        logging.info(f"Sending request to Gemini model: {model_name} for processing/translation. Text length: {len(raw_text)}")
+        logging.info(f"Sending request to Gemini model: {model_name} for translation. Text length: {len(raw_text)}")
         response = model.generate_content(full_prompt)
 
+        # Error handling for response remains similar
         if not response.parts:
             block_reason = None
             safety_ratings = None
@@ -265,10 +121,10 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, mod
                 finish_reason_obj = getattr(response, 'prompt_feedback', None)
                 finish_reason = getattr(finish_reason_obj, 'finish_reason', 'UNKNOWN') if finish_reason_obj else 'UNKNOWN'
                 logging.warning(f"Gemini ({model_name}) returned no parts (empty response). Finish Reason: {finish_reason}")
-                return "" # Return empty string if no content but not blocked
+                return "" # Return empty if no translation but not blocked
 
-        processed_text = response.text # This should be the Arabic translation
-        logging.info(f"Successfully received response from Gemini ({model_name}). Processed text length: {len(processed_text)}")
+        processed_text = response.text # Expected Arabic translation
+        logging.info(f"Successfully received translation from Gemini ({model_name}). Length: {len(processed_text)}")
         return processed_text
 
     except Exception as e:
@@ -276,30 +132,49 @@ def process_text_with_gemini(api_key: str, raw_text: str, rules_prompt: str, mod
         return f"Error: Failed to process text with Gemini ({model_name}). Details: {e}"
 
 
-# --- Appends text to an existing Document object (Unchanged) ---
-# This function correctly handles appending Arabic text passed to it.
-def append_text_to_document(document: Document, processed_text: str, filename: str, is_first_file: bool):
+# --- NEW: Create SINGLE Word Document with Arabic Text ---
+def create_arabic_word_doc_from_text(arabic_text: str, filename: str):
     """
-    Appends processed text (expected to be Arabic translation) to an existing
-    python-docx Document object. Sets paragraph alignment to right and text
-    direction to RTL for Arabic.
+    Creates a single Word document (.docx) in memory containing the translated Arabic text.
+    Sets paragraph alignment to right and text direction to RTL.
 
     Args:
-        document (Document): The existing document object.
-        processed_text (str): The Arabic text to append.
-        filename (str): Original filename for logging/placeholders.
-        is_first_file (bool): Flag indicating if this is the first file.
+        arabic_text (str): The translated Arabic text.
+        filename (str): Original filename for context in placeholders/logs.
 
     Returns:
-        bool: True if successful, False on critical error.
+        io.BytesIO: A BytesIO stream containing the Word document data, or None on critical error.
     """
     try:
-        if processed_text and processed_text.strip():
-            logging.info(f"Appending translated content from '{filename}' to the document.")
-            lines = processed_text.strip().split('\n')
+        document = Document()
+        # Set default styles for Arabic (RTL, Font)
+        style = document.styles['Normal']
+        font = style.font
+        font.name = 'Arial'
+        font.rtl = True
+
+        # Set complex script font using oxml
+        style_element = style.element
+        rpr_elements = style_element.xpath('.//w:rPr')
+        rpr = rpr_elements[0] if rpr_elements else OxmlElement('w:rPr')
+        if not rpr_elements: style_element.append(rpr)
+
+        font_name_element = rpr.find(qn('w:rFonts'))
+        if font_name_element is None:
+            font_name_element = OxmlElement('w:rFonts')
+            rpr.append(font_name_element)
+        font_name_element.set(qn('w:cs'), 'Arial') # Complex Script font
+
+        paragraph_format = style.paragraph_format
+        paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        paragraph_format.right_to_left = True
+
+        if arabic_text and arabic_text.strip():
+            lines = arabic_text.strip().split('\n')
             for line in lines:
                 if line.strip():
                     paragraph = document.add_paragraph(line.strip())
+                    # Explicit settings (redundant but safe)
                     paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                     paragraph.paragraph_format.right_to_left = True
                     for run in paragraph.runs:
@@ -307,8 +182,8 @@ def append_text_to_document(document: Document, processed_text: str, filename: s
                         run.font.rtl = True
                         run.font.complex_script = True
         else:
-            logging.warning(f"No translated text to append for '{filename}'. Adding placeholder.")
-            empty_msg = f"[No text extracted, processed, or translated for '{filename}']" # Updated placeholder
+            # Handle empty translation
+            empty_msg = f"[No translation generated for '{filename}']"
             paragraph = document.add_paragraph(empty_msg)
             paragraph.italic = True
             paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -318,20 +193,66 @@ def append_text_to_document(document: Document, processed_text: str, filename: s
                 run.font.rtl = True
                 run.font.complex_script = True
 
-        return True
+        # Save document to a BytesIO stream
+        doc_stream = io.BytesIO()
+        document.save(doc_stream)
+        doc_stream.seek(0)
+        logging.info(f"Successfully created intermediate Word doc stream for '{filename}'.")
+        return doc_stream
 
     except Exception as e:
-        logging.error(f"Error appending text for '{filename}' to Word document: {e}", exc_info=True)
-        try:
-            error_para = document.add_paragraph(f"[Error appending content for '{filename}': {e}]")
-            error_para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            error_para.paragraph_format.right_to_left = False
-            for run in error_para.runs:
-                run.font.name = 'Calibri'
-                run.font.rtl = False
-                run.font.complex_script = False
-                run.font.size = Pt(9)
-                run.italic = True
-        except Exception:
-            pass
-        return False
+        logging.error(f"Error creating intermediate Word document for '{filename}': {e}", exc_info=True)
+        return None # Indicate failure
+
+
+# --- RE-INTRODUCED: Merging Function using docxcompose ---
+def merge_word_documents(doc_streams_data: list[tuple[str, io.BytesIO]]):
+    """
+    Merges multiple Word documents (provided as BytesIO streams) into one single document.
+
+    Args:
+        doc_streams_data: A list of tuples (original_filename_str, word_doc_bytes_io_obj).
+
+    Returns:
+        io.BytesIO: A BytesIO stream containing the final merged Word document, or None on error.
+    """
+    if not doc_streams_data:
+        logging.warning("No document streams provided for merging.")
+        return None
+
+    try:
+        # Initialize Composer with the first document
+        first_filename, first_stream = doc_streams_data[0]
+        first_stream.seek(0)
+        # Ensure the first document is loaded correctly
+        master_doc = Document(first_stream)
+        composer = Composer(master_doc)
+        logging.info(f"Initialized merger with base document from '{first_filename}'.")
+
+        # Append remaining documents
+        if len(doc_streams_data) > 1:
+            for i in range(1, len(doc_streams_data)):
+                filename, stream = doc_streams_data[i]
+                stream.seek(0)
+                logging.info(f"Appending content from '{filename}'...")
+                # Load subsequent documents before appending
+                sub_doc = Document(stream)
+                # Add a page break before appending the next document's content
+                composer.master.add_page_break()
+                composer.append(sub_doc)
+                logging.info(f"Successfully appended content from '{filename}'.")
+
+        # Save the final merged document
+        merged_stream = io.BytesIO()
+        composer.save(merged_stream)
+        merged_stream.seek(0)
+        logging.info(f"Successfully merged {len(doc_streams_data)} documents.")
+        return merged_stream
+
+    except Exception as e:
+        # Log the specific error during merging
+        logging.error(f"Error merging Word documents using docxcompose: {e}", exc_info=True)
+        return None
+
+# --- REMOVED: append_text_to_document function ---
+# Not needed for the merge strategy
