@@ -1,7 +1,7 @@
-# app.py (Modified for DOCX Input, Translation, Merging, Visual ETA, and Pro Default)
+# app.py (Modified for DOCX Input, Translation, Merging, Visual ETA, and Flash Default)
 
 import streamlit as st
-import backend  # Assumes backend.py (backend_py_updated_v1) is in the same directory
+import backend  # Assumes backend.py is in the same directory
 import os
 from io import BytesIO
 import logging
@@ -20,11 +20,11 @@ st.set_page_config(
 
 # --- Constants for Estimation ---
 # Adjust these based on observation if needed
-# Using previously doubled values
-BASE_PROCESSING_TIME_SECONDS = 60  # Base time for setup, merging etc. (30 * 2)
-TIME_PER_FILE_FLASH_SECONDS = 60 # Estimated avg time per file for Gemini Flash (30 * 2)
-TIME_PER_FILE_PRO_SECONDS = 120  # Estimated avg time per file for Gemini Pro (60 * 2)
-# END UPDATED CONSTANTS
+# *** CHANGE 1: Reverted time estimates ***
+BASE_PROCESSING_TIME_SECONDS = 60  # Base time for setup, merging etc. (Kept previous doubled value)
+TIME_PER_FILE_FLASH_SECONDS = 30 # Estimated avg time per file for Gemini Flash (Reverted from 60)
+TIME_PER_FILE_PRO_SECONDS = 60   # Estimated avg time per file for Gemini Pro (Reverted from 120)
+# *** END CHANGE 1 ***
 
 # --- Initialize Session State ---
 default_state = {
@@ -142,23 +142,26 @@ model_options = {
 selected_model_display_name = st.sidebar.selectbox(
     "Choose the Gemini model for translation:",
     options=list(model_options.keys()),
-    index=1, # UPDATED: Default to Pro (index 1) instead of Flash (index 0)
+    # *** CHANGE 2: Default to Flash (index 0) instead of Pro (index 1) ***
+    index=0,
     key="gemini_model_select",
     help="Select the AI model. Pro is better for nuanced translation but slower."
 )
+# *** END CHANGE 2 ***
 selected_model_id = model_options[selected_model_display_name]
 st.sidebar.caption(f"Selected model ID: `{selected_model_id}`")
 
 # Translation Rules
 st.sidebar.markdown("---")
 st.sidebar.header("📜 Translation Rules")
-default_rules = """
-Translate the following text accurately into Modern Standard Arabic.
+# *** CHANGE 3: Updated default rules prompt ***
+default_rules = """Translate the following text accurately into Modern Standard Arabic.
 The input text might be in Urdu, Farsi, or English.
 Preserve the meaning and intent of the original text.
+Existing arabic text is kept as is.
 Format the output as clean Arabic paragraphs suitable for a document.
-Return ONLY the Arabic translation, without any introductory phrases, explanations, or markdown formatting.
-"""
+Return ONLY the Arabic translation, without any introductory phrases, explanations, or markdown formatting."""
+# *** END CHANGE 3 ***
 rules_prompt = st.sidebar.text_area(
     "Enter the translation instructions for Gemini:", value=default_rules, height=200,
     help="Instructions for how Gemini should translate the text extracted from the Word documents."
@@ -316,6 +319,7 @@ if process_button_top_clicked or process_button_bottom_clicked:
         total_files = len(st.session_state.ordered_files)
 
         # --- Calculate and Display Initial Estimated Time ---
+        # Use the updated time constants
         time_per_file = TIME_PER_FILE_PRO_SECONDS if "pro" in selected_model_id else TIME_PER_FILE_FLASH_SECONDS
         # This is the total estimated duration for the whole process
         estimated_total_seconds = BASE_PROCESSING_TIME_SECONDS + (total_files * time_per_file)
@@ -340,7 +344,9 @@ if process_button_top_clicked or process_button_bottom_clicked:
             # Estimate based on how many files are left + remaining base time
             files_remaining = total_files - i
             # Simple estimate: time left is time for remaining files + base time (assuming base time is mostly merge)
-            estimated_remaining_seconds = (files_remaining * time_per_file) + BASE_PROCESSING_TIME_SECONDS
+            # Use the correct time_per_file based on selected model
+            current_time_per_file = TIME_PER_FILE_PRO_SECONDS if "pro" in selected_model_id else TIME_PER_FILE_FLASH_SECONDS
+            estimated_remaining_seconds = (files_remaining * current_time_per_file) + BASE_PROCESSING_TIME_SECONDS
             remaining_time_str = format_time(estimated_remaining_seconds)
             # --- End Remaining Time Calculation ---
 
